@@ -5,9 +5,9 @@ prompt = no
 x509_extensions = myexts
 
 [ req_distinguished_name ]
-O = Fedora
-CN = Fedora kernel signing key
-emailAddress = kernel-team@fedoraproject.org
+O = CentOS
+CN = CentOS AltArch kernel signing key
+emailAddress = security@centos.org
 
 [ myexts ]
 basicConstraints=critical,CA:FALSE
