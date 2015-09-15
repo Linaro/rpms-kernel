@@ -6,7 +6,7 @@ Summary: The Linux kernel
 # For a stable, released kernel, released_kernel should be 1. For rawhide
 # and/or a kernel built from an rc or git snapshot, released_kernel should
 # be 0.
-%global released_kernel 0
+%global released_kernel 1
 
 # Sign modules on x86.  Make sure the config files match this setting if more
 # architectures are added.
@@ -46,7 +46,7 @@ Summary: The Linux kernel
 # base_sublevel is the kernel version we're starting with and patching
 # on top of -- for example, 3.1-rc7-git1 starts with a 3.0 base,
 # which yields a base_sublevel of 0.
-%define base_sublevel 1
+%define base_sublevel 2
 
 ## If this is a released kernel ##
 %if 0%{?released_kernel}
@@ -65,9 +65,9 @@ Summary: The Linux kernel
 # The next upstream release sublevel (base_sublevel+1)
 %define upstream_sublevel %(echo $((%{base_sublevel} + 1)))
 # The rc snapshot level
-%define rcrev 5
+%define rcrev 0
 # The git snapshot level
-%define gitrev 3
+%define gitrev 0
 # Set rpm version accordingly
 %define rpmversion 4.%{upstream_sublevel}.0
 %endif
@@ -378,7 +378,7 @@ BuildRequires: net-tools, hostname, bc
 BuildRequires: sparse
 %endif
 %if %{with_perf}
-BuildRequires: elfutils-devel zlib-devel binutils-devel newt-devel python-devel perl(ExtUtils::Embed) bison flex
+BuildRequires: elfutils-devel zlib-devel binutils-devel newt-devel python-devel perl(ExtUtils::Embed) bison flex xz-devel
 BuildRequires: audit-libs-devel
 %ifnarch s390 s390x %{arm}
 BuildRequires: numactl-devel
@@ -589,12 +589,39 @@ Patch502: firmware-Drop-WARN-from-usermodehelper_read_trylock-.patch
 
 Patch503: drm-i915-turn-off-wc-mmaps.patch
 
-Patch505: 0001-dm-fix-dm_merge_bvec-regression-on-32-bit-systems.patch
 
 #rhbz 1244511
 Patch507: HID-chicony-Add-support-for-Acer-Aspire-Switch-12.patch
 
 Patch508: kexec-uefi-copy-secure_boot-flag-in-boot-params.patch
+
+#rhbz 1239050
+Patch509: ideapad-laptop-Add-Lenovo-Yoga-3-14-to-no_hw_rfkill-.patch
+
+#rhbz 1253789
+Patch510: iSCSI-let-session-recovery_tmo-sysfs-writes-persist.patch
+
+#rhbz 1250717
+Patch512: ext4-dont-manipulate-recovery-flag-when-freezing.patch
+
+#rhbz 1257534
+Patch513: nv46-Change-mc-subdev-oclass-from-nv44-to-nv4c.patch
+
+#rhbz 1212201
+Patch514: drm-qxl-validate-monitors-config-modes.patch
+
+#rhbz 1257500
+Patch517: vmwgfx-Rework-device-initialization.patch
+Patch518: drm-vmwgfx-Allow-dropped-masters-render-node-like-ac.patch
+
+#rhbz 1259231
+Patch519: make-flush-workqueue-available-to-non-GPL-modules.patch
+
+#rhbz 1237136
+Patch522: block-blkg_destroy_all-should-clear-q-root_blkg-and-.patch
+
+#CVE-2015-6937 rhbz 1263139 1263140
+Patch523: RDS-verify-the-underlying-transport-exists-before-cr.patch
 
 
 # END OF PATCH DEFINITIONS
@@ -1130,6 +1157,15 @@ fi
 cp -al vanilla-%{vanillaversion} linux-%{KVERREL}
 
 cd linux-%{KVERREL}
+if [ ! -d .git ]; then
+    git init
+    git config user.email "kernel-team@fedoraproject.org"
+    git config user.name "Fedora Kernel Team"
+    git config gc.auto 0
+    git add .
+    git commit -a -q -m "baseline"
+fi
+
 
 # released_kernel with possible stable updates
 %if 0%{?stable_base}
