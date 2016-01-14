@@ -3,7 +3,7 @@
 
 Summary: The Linux kernel
 
-# % define buildid .local
+#%define buildid .1
 
 # For a stable, released kernel, released_kernel should be 1. For rawhide
 # and/or a kernel built from an rc or git snapshot, released_kernel should
@@ -12,11 +12,12 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
+%define centupdate 0.22.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
 
-%define pkg_release %{pkgrelease}%{?buildid}
+%define pkg_release %{centupdate}%{?buildid}
 
 # The kernel tarball/base version
 %define rheltarball %{rpmversion}-%{pkgrelease}
@@ -237,7 +238,7 @@ BuildRequires: module-init-tools, patch >= 2.5.4, bash >= 2.03, sh-utils, tar
 BuildRequires: xz, findutils, gzip, m4, perl, make >= 3.78, diffutils, gawk
 BuildRequires: gcc >= 3.4.2, binutils >= 2.12
 BuildRequires: hostname, net-tools, bc
-BuildRequires: xmlto, asciidoc
+BuildRequires: xmlto, asciidoc, git
 BuildRequires: openssl
 BuildRequires: hmaccalc
 %ifarch x86_64
@@ -320,6 +321,17 @@ Source56: config-arm64-redhat
 Source57: config-nodebug-redhat
 Source58: config-generic
 Source59: config-debug
+Source60: config-centos-sig
+
+
+# APM Patches
+Patch1001: 0001-drivers-net-xgene-fixed-X-Gene-ethernet-driver-crash.patch
+Patch1002: 0002-drivers-net-xgene-add-support-for-XFI-1-TSO-RGMII-RX.patch
+Patch1003: 0003-PCI-xgene-Add-support-for-a-64-bit-prefetchable-memo.patch
+Patch1004: 0004-pci-xgene-hide-X-Gene-BAR0-1-in-case-of-xgene_raw_pc.patch
+Patch1005: 0005-mailbox-Add-APM-Xgene-platform-mailbox-driver.patch
+Patch1006: 0006-arm64-copy_to-from-in_user-optimization-using-copy-t.patch
+Patch1007: 0007-drivers-pci-xgene-fixed-Mellanox-Ethernet-not-commin.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -640,6 +652,24 @@ make -f %{SOURCE30} VERSION=%{version} configs
 
 ApplyOptionalPatch linux-kernel-test.patch
 
+if [ ! -d .git ]; then
+    git init
+    git config user.email "noreply@centos.org"
+    git config user.name "AltArch Kernel"
+    git config gc.auto 0
+    git add .
+    git commit -a -q -m "baseline"
+fi
+
+# Apply APM patches
+git am %{PATCH1001}
+git am %{PATCH1002}
+git am %{PATCH1003}
+git am %{PATCH1004}
+git am %{PATCH1005}
+git am %{PATCH1006}
+git am %{PATCH1007}
+
 # Any further pre-build tree manipulations happen here.
 
 chmod +x scripts/checkpatch.pl
@@ -668,7 +698,8 @@ rm -f kernel-%{version}-*debug.config
 # now run oldconfig over all the config files
 for i in *.config
 do
-  mv $i .config
+  #mv $i .config
+  perl merge.pl config-centos-sig $i > .config
   Arch=`head -1 .config | cut -b 3-`
   %{make} ARCH=$Arch listnewconfig | grep -E '^CONFIG_' >.newoptions || true
 %if %{listnewconfig_fail}

@@ -1,0 +1,31 @@
+From e5d7b15063607073d140dcaf42dc0e7be9e888a3 Mon Sep 17 00:00:00 2001
+From: Phong Vo <pvo@apm.com>
+Date: Wed, 16 Dec 2015 15:27:24 +0700
+Subject: =?UTF-8?q?drivers:pci:xgene:fixed=20Mellanox=20Ethernet=20not=20c?=
+ =?UTF-8?q?omming=20up=20with=2064-bit=0Aprefetchable=20memory=20window?=
+
+This patch fixes missing code change in previous commit
+PCI: xgene: Add support for a 64-bit prefetchable memory window
+that causes Mellanox driver not to come up
+
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/pci/host/pci-xgene.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/drivers/pci/host/pci-xgene.c b/drivers/pci/host/pci-xgene.c
+index d7449b0..938f45b 100644
+--- a/drivers/pci/host/pci-xgene.c
++++ b/drivers/pci/host/pci-xgene.c
+@@ -323,8 +323,6 @@ static int xgene_pcie_map_ranges(struct xgene_pcie_port *port,
+ 				return ret;
+ 			break;
+ 		case IORESOURCE_MEM:
+-			xgene_pcie_setup_ob_reg(port, res, OMR1BARL, res->start,
+-						res->start - window->offset);
+ 			if (res->flags & IORESOURCE_PREFETCH)
+ 				xgene_pcie_setup_ob_reg(port, res, OMR2BARL,
+ 							res->start,
+-- 
+2.6.0
+
