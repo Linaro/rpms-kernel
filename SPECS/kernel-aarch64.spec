@@ -341,6 +341,9 @@ Patch1012: 0012-drivers-net-xgene-classifier-rss-support.patch
 # Security patches outside redhat
 Patch2000: KEYS-Fix-keyring-ref-leak-in-join_session_keyring.patch
 
+# NXP Patches
+Patch3001: NXP-Layerscape-support.patch
+
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
 
@@ -687,6 +690,8 @@ git am %{PATCH1012}
 
 git am %{PATCH2000}
 
+# Apply NXP patches
+git am %{PATCH3001}
 
 # Any further pre-build tree manipulations happen here.
 
