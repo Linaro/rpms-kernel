@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
-%define centupdate 0.25.el7
+%define centupdate 0.26.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
@@ -332,6 +332,11 @@ Patch1004: 0004-pci-xgene-hide-X-Gene-BAR0-1-in-case-of-xgene_raw_pc.patch
 Patch1005: 0005-mailbox-Add-APM-Xgene-platform-mailbox-driver.patch
 Patch1006: 0006-arm64-copy_to-from-in_user-optimization-using-copy-t.patch
 Patch1007: 0007-drivers-pci-xgene-fixed-Mellanox-Ethernet-not-commin.patch
+Patch1008: 0008-irqchip-gic-v2m-Add-workaround-for-APM-X-Gene-GICv2m.patch
+Patch1009: 0009-Add-X-Gene-ACPI-I2C-device-support.patch
+Patch1010: 0010-drivers-rtc-add-ACPI-support-for-ds1307-RTC-driver.patch
+Patch1011: 0011-drivers-net-xgene-fix-tx-flow-and-extra-irq.patch
+Patch1012: 0012-drivers-net-xgene-classifier-rss-support.patch
 
 # Security patches outside redhat
 Patch2000: KEYS-Fix-keyring-ref-leak-in-join_session_keyring.patch
@@ -672,6 +677,11 @@ git am %{PATCH1004}
 git am %{PATCH1005}
 git am %{PATCH1006}
 git am %{PATCH1007}
+git am %{PATCH1008}
+git am %{PATCH1009}
+git am %{PATCH1010}
+git am %{PATCH1011}
+git am %{PATCH1012}
 
 # apply security patch for cve-2016-0728
 
@@ -1443,6 +1453,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+
+* Thu Feb 25 2016 Jim Perrin <jperrin@centos.org [4.2.0-0.26.el7]
+- Add patches 1008-1012 for APM
 
 * Wed Jan 20 2016 Jim Perrin <jperrin@centos.org [4.2.0-0.25.el7]
 - Patch for CVE-2016-0728

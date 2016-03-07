@@ -1,0 +1,89 @@
+From a1652dbdb7fbb9b4368ab9b12e8a163a57c63745 Mon Sep 17 00:00:00 2001
+From: Phong Vo <pvo@apm.com>
+Date: Thu, 4 Feb 2016 10:39:42 +0700
+Subject: drivers:rtc: add ACPI support for ds1307 RTC driver
+
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/rtc/rtc-ds1307.c | 37 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/rtc/rtc-ds1307.c b/drivers/rtc/rtc-ds1307.c
+index 6e76de1..be2f4e8 100644
+--- a/drivers/rtc/rtc-ds1307.c
++++ b/drivers/rtc/rtc-ds1307.c
+@@ -11,6 +11,7 @@
+  * published by the Free Software Foundation.
+  */
+ 
++#include <linux/acpi.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+ #include <linux/slab.h>
+@@ -184,6 +185,23 @@ static const struct i2c_device_id ds1307_id[] = {
+ };
+ MODULE_DEVICE_TABLE(i2c, ds1307_id);
+ 
++static const struct acpi_device_id ds1307_acpi_ids[] = {
++	{ "DS1307", ds_1307 },
++	{ "DS1337", ds_1337 },
++	{ "DS1338", ds_1338 },
++	{ "DS1339", ds_1339 },
++	{ "DS1388", ds_1388 },
++	{ "DS1340", ds_1340 },
++	{ "DS3231", ds_3231 },
++	{ "M41T00", m41t00 },
++	{ "MCP7940X", mcp794xx },
++	{ "MCP7941X", mcp794xx },
++	{ "PT7C4338", ds_1307 },
++	{ "RX8025", rx_8025 },
++        { }
++};
++MODULE_DEVICE_TABLE(acpi, ds1307_acpi_ids);
++
+ /*----------------------------------------------------------------------*/
+ 
+ #define BLOCK_DATA_MAX_TRIES 10
+@@ -891,7 +909,7 @@ static int ds1307_probe(struct i2c_client *client,
+ 	struct ds1307		*ds1307;
+ 	int			err = -ENODEV;
+ 	int			tmp;
+-	struct chip_desc	*chip = &chips[id->driver_data];
++	struct chip_desc	*chip;
+ 	struct i2c_adapter	*adapter = to_i2c_adapter(client->dev.parent);
+ 	bool			want_irq = false;
+ 	unsigned char		*buf;
+@@ -914,7 +932,21 @@ static int ds1307_probe(struct i2c_client *client,
+ 	i2c_set_clientdata(client, ds1307);
+ 
+ 	ds1307->client	= client;
+-	ds1307->type	= id->driver_data;
++
++	if (id) {
++		ds1307->type	= id->driver_data;
++	} else {
++		const struct acpi_device_id *acpi_id = NULL;
++
++		if (ACPI_HANDLE(&client->dev))
++			acpi_id = acpi_match_device(ds1307_acpi_ids, &client->dev);
++		if (acpi_id)
++			ds1307->type = acpi_id->driver_data;
++		else
++			return -ENODEV;
++	}
++
++	chip = &chips[ds1307->type];
+ 
+ 	if (!pdata && client->dev.of_node)
+ 		ds1307_trickle_of_init(client, chip);
+@@ -1245,6 +1277,7 @@ static int ds1307_remove(struct i2c_client *client)
+ static struct i2c_driver ds1307_driver = {
+ 	.driver = {
+ 		.name	= "rtc-ds1307",
++		.acpi_match_table = ACPI_PTR(ds1307_acpi_ids),
+ 		.owner	= THIS_MODULE,
+ 	},
+ 	.probe		= ds1307_probe,
+-- 
+2.6.0
+

@@ -1,0 +1,2233 @@
+From e482d0ccb90d018af6cf42de4225ad4fff67c140 Mon Sep 17 00:00:00 2001
+From: Iyappan Subramanian <isubramanian@apm.com>
+Date: Mon, 15 Feb 2016 11:26:22 +0700
+Subject: drivers: net: xgene: Add support for Classifier engine
+
+This patchset is a roll up of the following patches to enable
+
+(i) Classifier engine that is used for parsing
+through the packet and extracting a search string that is then used
+to search a database to find associative data.
+
+(ii) Receive Side Scaling (RSS) that does dynamic load
+balancing of the CPUs by controlling the number of messages enqueued
+per CPU though the help of Toeplitz Hash function of 4-tuple of
+source TCP/UDP port, destination TCP/UDP port, source IPV4 address and
+destination IPV4 address.
+
+(iii) Multi queue, to make advantage of RSS
+
+(Reference: http://www.spinics.net/lists/netdev/msg364035.html)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/net/ethernet/apm/xgene/Makefile          |   3 +-
+ drivers/net/ethernet/apm/xgene/xgene_enet_cle.c  | 357 +++++++++++++++++++++++
+ drivers/net/ethernet/apm/xgene/xgene_enet_cle.h  | 254 ++++++++++++++++
+ drivers/net/ethernet/apm/xgene/xgene_enet_hw.h   |   1 +
+ drivers/net/ethernet/apm/xgene/xgene_enet_main.c |  29 +-
+ drivers/net/ethernet/apm/xgene/xgene_enet_main.h |  14 +
+ 6 files changed, 649 insertions(+), 9 deletions(-)
+ create mode 100644 drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+ create mode 100644 drivers/net/ethernet/apm/xgene/xgene_enet_cle.h
+
+diff --git a/drivers/net/ethernet/apm/xgene/Makefile b/drivers/net/ethernet/apm/xgene/Makefile
+index 700b5ab..f46321f 100644
+--- a/drivers/net/ethernet/apm/xgene/Makefile
++++ b/drivers/net/ethernet/apm/xgene/Makefile
+@@ -3,5 +3,6 @@
+ #
+ 
+ xgene-enet-objs := xgene_enet_hw.o xgene_enet_sgmac.o xgene_enet_xgmac.o \
+-		   xgene_enet_main.o xgene_enet_ring2.o xgene_enet_ethtool.o
++		   xgene_enet_main.o xgene_enet_ring2.o xgene_enet_ethtool.o \
++		   xgene_enet_cle.o
+ obj-$(CONFIG_NET_XGENE) += xgene-enet.o
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+new file mode 100644
+index 0000000..6a10529
+--- /dev/null
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+@@ -0,0 +1,357 @@
++/* Applied Micro X-Gene SoC Ethernet Classifier structures
++ *
++ * Copyright (c) 2016, Applied Micro Circuits Corporation
++ * Authors: Khuong Dinh <kdinh@xxxxxxx>
++ *          Tanmay Inamdar <tinamdar@xxxxxxx>
++ *          Iyappan Subramanian <isubramanian@xxxxxxx>
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "xgene_enet_main.h"
++
++static void xgene_cle_dbptr_to_hw(struct xgene_enet_pdata *pdata,
++				  struct xgene_cle_dbptr *dbptr, u32 *buf)
++{
++	buf[4] = SET_VAL(CLE_FPSEL, dbptr->fpsel) |
++		 SET_VAL(CLE_DSTQIDL, dbptr->dstqid);
++
++	buf[5] = SET_VAL(CLE_DSTQIDH, (u32)dbptr->dstqid >> CLE_DSTQIDL_LEN) |
++		 SET_VAL(CLE_PRIORITY, dbptr->cle_priority);
++}
++
++static void xgene_cle_kn_to_hw(struct xgene_cle_ptree_kn *kn, u32 *buf)
++{
++	u32 i, j = 0;
++	u32 data;
++
++	buf[j++] = SET_VAL(CLE_TYPE, kn->node_type);
++	for (i = 0; i < kn->num_keys; i++) {
++		struct xgene_cle_ptree_key *key = &kn->key[i];
++
++		if (!(i % 2)) {
++			buf[j] = SET_VAL(CLE_KN_PRIO, key->priority) |
++				 SET_VAL(CLE_KN_RPTR, key->result_pointer);
++		} else {
++			data = SET_VAL(CLE_KN_PRIO, key->priority) |
++			       SET_VAL(CLE_KN_RPTR, key->result_pointer);
++			buf[j++] |= (data << 16);
++		}
++	}
++}
++
++static void xgene_cle_dn_to_hw(struct xgene_cle_ptree_ewdn *dn,
++			       u32 *buf, u32 jb)
++{
++	u32 i, j = 0;
++	u32 npp;
++	struct xgene_cle_ptree_branch *br;
++
++	buf[j++] = SET_VAL(CLE_DN_TYPE, dn->node_type) |
++		   SET_VAL(CLE_DN_LASTN, dn->last_node) |
++		   SET_VAL(CLE_DN_HLS, dn->hdr_len_store) |
++		   SET_VAL(CLE_DN_EXT, dn->hdr_extn) |
++		   SET_VAL(CLE_DN_BSTOR, dn->byte_store) |
++		   SET_VAL(CLE_DN_SBSTOR, dn->search_byte_store) |
++		   SET_VAL(CLE_DN_RPTR, dn->result_pointer);
++
++	for (i = 0; i < dn->num_branches; i++) {
++		br = &dn->branch[i];
++		npp = br->next_packet_pointer;
++
++		if ((br->jump_rel == JMP_ABS) && (npp < CLE_PKTRAM_SIZE))
++			npp += jb;
++
++		buf[j++] = SET_VAL(CLE_BR_VALID, br->valid) |
++			   SET_VAL(CLE_BR_NPPTR, npp) |
++			   SET_VAL(CLE_BR_JB, br->jump_bw) |
++			   SET_VAL(CLE_BR_JR, br->jump_rel) |
++			   SET_VAL(CLE_BR_OP, br->operation) |
++			   SET_VAL(CLE_BR_NNODE, br->next_node) |
++			   SET_VAL(CLE_BR_NBR, br->next_branch);
++
++		buf[j++] = SET_VAL(CLE_BR_DATA, br->data) |
++			   SET_VAL(CLE_BR_MASK, br->mask);
++	}
++}
++
++static int xgene_cle_poll_cmd_done(void __iomem *base,
++				   enum xgene_cle_cmd_type cmd)
++{
++	u32 status, loop = 10;
++	int ret = -EBUSY;
++
++	while (loop--) {
++		status = ioread32(base + INDCMD_STATUS);
++		if (status & cmd) {
++			ret = 0;
++			break;
++		}
++		usleep_range(1000, 2000);
++	}
++
++	return ret;
++}
++
++static int xgene_cle_dram_wr(struct xgene_enet_cle *cle, u32 *data, u8 nregs,
++			     u32 index, enum xgene_cle_dram_type type,
++			     enum xgene_cle_cmd_type cmd)
++{
++	void __iomem *base = cle->base;
++	enum xgene_cle_parser parser = cle->active_parser;
++	u32 i, j, ind_addr;
++	u8 port, nparsers;
++	int ret = 0;
++
++	/* PTREE_RAM onwards, DRAM regions are common for all parsers */
++	nparsers = (type >= PTREE_RAM) ? 1 : cle->parsers;
++
++	for (i = 0; i < nparsers; i++) {
++		port = i;
++		if ((type < PTREE_RAM) && (parser != PARSER_ALL))
++			port = parser;
++
++		ind_addr = XGENE_CLE_DRAM(type + (port * 4)) | index;
++		iowrite32(ind_addr, base + INDADDR);
++		for (j = 0; j < nregs; j++)
++			iowrite32(data[j], base + DATA_RAM0 + (j * 4));
++		iowrite32(cmd, base + INDCMD);
++
++		ret = xgene_cle_poll_cmd_done(base, cmd);
++		if (ret)
++			break;
++	}
++
++	return ret;
++}
++
++static void xgene_cle_enable_ptree(struct xgene_enet_pdata *pdata,
++				   struct xgene_enet_cle *cle)
++{
++	struct xgene_cle_ptree *ptree = &cle->ptree;
++	void __iomem *addr, *base = cle->base;
++	u32 offset = CLE_PORT_OFFSET;
++	u32 i;
++
++	/* 1G port has to advance 4 bytes and 10G has to advance 8 bytes */
++	ptree->start_pkt += cle->jump_bytes;
++	for (i = 0; i < cle->parsers; i++) {
++		if (cle->active_parser != PARSER_ALL)
++			addr = base + cle->active_parser * offset;
++		else
++			addr = base + (i * offset);
++
++		iowrite32(ptree->start_node & 0x3fff, addr + SNPTR0);
++		iowrite32(ptree->start_pkt & 0x1ff, addr + SPPTR0);
++	}
++}
++
++static int xgene_cle_setup_dbptr(struct xgene_enet_pdata *pdata,
++				 struct xgene_enet_cle *cle)
++{
++	struct xgene_cle_ptree *ptree = &cle->ptree;
++	struct xgene_cle_dbptr *dbptr = ptree->dbptr;
++	u32 buf[CLE_DRAM_REGS];
++	u32 i;
++	int ret;
++
++	memset(buf, 0, sizeof(buf));
++	for (i = 0; i < ptree->num_dbptr; i++) {
++		xgene_cle_dbptr_to_hw(pdata, &dbptr[i], buf);
++		ret = xgene_cle_dram_wr(cle, buf, 6, i + ptree->start_dbptr,
++					DB_RAM,	CLE_CMD_WR);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int xgene_cle_setup_node(struct xgene_enet_pdata *pdata,
++				struct xgene_enet_cle *cle)
++{
++	struct xgene_cle_ptree *ptree = &cle->ptree;
++	struct xgene_cle_ptree_ewdn *dn = ptree->dn;
++	struct xgene_cle_ptree_kn *kn = ptree->kn;
++	u32 buf[CLE_DRAM_REGS];
++	int i, j, ret;
++
++	memset(buf, 0, sizeof(buf));
++	for (i = 0; i < ptree->num_dn; i++) {
++		xgene_cle_dn_to_hw(&dn[i], buf, cle->jump_bytes);
++		ret = xgene_cle_dram_wr(cle, buf, 17, i + ptree->start_node,
++					PTREE_RAM, CLE_CMD_WR);
++		if (ret)
++			return ret;
++	}
++
++	/* continue node index for key node */
++	memset(buf, 0, sizeof(buf));
++	for (j = i; j < (ptree->num_kn + ptree->num_dn); j++) {
++		xgene_cle_kn_to_hw(&kn[j - ptree->num_dn], buf);
++		ret = xgene_cle_dram_wr(cle, buf, 17, j + ptree->start_node,
++					PTREE_RAM, CLE_CMD_WR);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int xgene_cle_setup_ptree(struct xgene_enet_pdata *pdata,
++				 struct xgene_enet_cle *cle)
++{
++	int ret;
++
++	ret = xgene_cle_setup_node(pdata, cle);
++	if (ret)
++		return ret;
++
++	ret = xgene_cle_setup_dbptr(pdata, cle);
++	if (ret)
++		return ret;
++
++	xgene_cle_enable_ptree(pdata, cle);
++
++	return 0;
++}
++
++static void xgene_cle_setup_def_dbptr(struct xgene_enet_pdata *pdata,
++				      struct xgene_enet_cle *enet_cle,
++				      struct xgene_cle_dbptr *dbptr,
++				      u32 index, u8 priority)
++{
++	void __iomem *base = enet_cle->base;
++	void __iomem *base_addr;
++	u32 buf[CLE_DRAM_REGS];
++	u32 def_cls, offset;
++	u32 i, j;
++
++	memset(buf, 0, sizeof(buf));
++	xgene_cle_dbptr_to_hw(pdata, dbptr, buf);
++
++	for (i = 0; i < enet_cle->parsers; i++) {
++		if (enet_cle->active_parser != PARSER_ALL) {
++			offset = enet_cle->active_parser *
++				CLE_PORT_OFFSET;
++		} else {
++			offset = i * CLE_PORT_OFFSET;
++		}
++
++		base_addr = base + DFCLSRESDB00 + offset;
++		for (j = 0; j < 6; j++)
++			iowrite32(buf[j], base_addr + (j * 4));
++
++		def_cls = ((priority & 0x7) << 10) | (index & 0x3ff);
++		iowrite32(def_cls, base + DFCLSRESDBPTR0 + offset);
++	}
++}
++
++static int xgene_enet_cle_init(struct xgene_enet_pdata *pdata)
++{
++	struct xgene_enet_cle *enet_cle = &pdata->cle;
++	struct xgene_cle_ptree *ptree = &enet_cle->ptree;
++	struct xgene_cle_dbptr dbptr[DB_MAX_PTRS];
++	struct xgene_cle_ptree_kn kn;
++	u32 def_qid, def_fpsel, pool_id;
++	struct xgene_cle_ptree_ewdn ptree_dn[] = {
++		{
++			/* PKT_TYPE_NODE */
++			.node_type = EWDN,
++			.last_node = 0,
++			.hdr_len_store = 0,
++			.hdr_extn = NO_BYTE,
++			.byte_store = NO_BYTE,
++			.search_byte_store = NO_BYTE,
++			.result_pointer = DB_RES_DROP,
++			.num_branches = 1,
++			.branch = {
++				{
++					/* Allow all packet type */
++					.valid = 0,
++					.next_packet_pointer = 0,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = LAST_NODE,
++					.next_branch = 0,
++					.data = 0x0,
++					.mask = 0xffff
++				}
++			}
++		},
++		{
++			/* LAST NODE */
++			.node_type = EWDN,
++			.last_node = 1,
++			.hdr_len_store = 0,
++			.hdr_extn = NO_BYTE,
++			.byte_store = NO_BYTE,
++			.search_byte_store = NO_BYTE,
++			.result_pointer = DB_RES_DROP,
++			.num_branches = 1,
++			.branch = {
++				{
++					.valid = 0,
++					.next_packet_pointer = 0,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = MAX_NODES,
++					.next_branch = 0,
++					.data = 0,
++					.mask = 0xffff
++				}
++			}
++		}
++	};
++
++	ptree->start_pkt = 12; /* Ethertype */
++
++	def_qid = xgene_enet_dst_ring_num(pdata->rx_ring);
++	pool_id = pdata->rx_ring->buf_pool->id;
++	def_fpsel = xgene_enet_ring_bufnum(pool_id) - 0x20;
++
++	memset(dbptr, 0, sizeof(struct xgene_cle_dbptr) * DB_MAX_PTRS);
++	dbptr[DB_RES_ACCEPT].fpsel =  def_fpsel;
++	dbptr[DB_RES_ACCEPT].dstqid = def_qid;
++	dbptr[DB_RES_ACCEPT].cle_priority = 1;
++
++	dbptr[DB_RES_DEF].fpsel = def_fpsel;
++	dbptr[DB_RES_DEF].dstqid = def_qid;
++	dbptr[DB_RES_DEF].cle_priority = 7;
++	xgene_cle_setup_def_dbptr(pdata, enet_cle, &dbptr[DB_RES_DEF],
++				  DB_RES_ACCEPT, 7);
++
++	dbptr[DB_RES_DROP].drop = 1;
++
++	memset(&kn, 0, sizeof(kn));
++	kn.node_type = KN;
++	kn.num_keys = 1;
++	kn.key[0].priority = 0;
++	kn.key[0].result_pointer = DB_RES_ACCEPT;
++
++	ptree->dn = ptree_dn;
++	ptree->kn = &kn;
++	ptree->dbptr = dbptr;
++	ptree->num_dn = MAX_NODES;
++	ptree->num_kn = 1;
++	ptree->num_dbptr = DB_MAX_PTRS;
++
++	return xgene_cle_setup_ptree(pdata, enet_cle);
++}
++
++struct xgene_cle_ops xgene_cle3in_ops = {
++	.cle_init = xgene_enet_cle_init,
++};
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h
+new file mode 100644
+index 0000000..cc87f0e
+--- /dev/null
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h
+@@ -0,0 +1,254 @@
++/* Applied Micro X-Gene SoC Ethernet Classifier structures
++ *
++ * Copyright (c) 2016, Applied Micro Circuits Corporation
++ * Authors: Khuong Dinh <kdinh@xxxxxxx>
++ *          Tanmay Inamdar <tinamdar@xxxxxxx>
++ *          Iyappan Subramanian <isubramanian@xxxxxxx>
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef __XGENE_ENET_CLE_H__
++#define __XGENE_ENET_CLE_H__
++
++#include <linux/io.h>
++#include <linux/random.h>
++
++/* Register offsets */
++#define INDADDR			0x04
++#define INDCMD			0x08
++#define INDCMD_STATUS		0x0c
++#define DATA_RAM0		0x10
++#define SNPTR0			0x0100
++#define SPPTR0			0x0104
++#define DFCLSRESDBPTR0		0x0108
++#define DFCLSRESDB00		0x010c
++
++#define CLE_CMD_TO		10	/* ms */
++#define CLE_PKTRAM_SIZE		256	/* bytes */
++#define CLE_PORT_OFFSET		0x200
++#define CLE_DRAM_REGS		17
++
++#define CLE_DN_TYPE_LEN		2
++#define CLE_DN_TYPE_POS		0
++#define CLE_DN_LASTN_LEN	1
++#define CLE_DN_LASTN_POS	2
++#define CLE_DN_HLS_LEN		1
++#define CLE_DN_HLS_POS		3
++#define CLE_DN_EXT_LEN		2
++#define	CLE_DN_EXT_POS		4
++#define CLE_DN_BSTOR_LEN	2
++#define CLE_DN_BSTOR_POS	6
++#define CLE_DN_SBSTOR_LEN	2
++#define CLE_DN_SBSTOR_POS	8
++#define CLE_DN_RPTR_LEN		12
++#define CLE_DN_RPTR_POS		12
++
++#define CLE_BR_VALID_LEN	1
++#define CLE_BR_VALID_POS	0
++#define CLE_BR_NPPTR_LEN	9
++#define CLE_BR_NPPTR_POS	1
++#define CLE_BR_JB_LEN		1
++#define CLE_BR_JB_POS		10
++#define CLE_BR_JR_LEN		1
++#define CLE_BR_JR_POS		11
++#define CLE_BR_OP_LEN		3
++#define CLE_BR_OP_POS		12
++#define CLE_BR_NNODE_LEN	9
++#define CLE_BR_NNODE_POS	15
++#define CLE_BR_NBR_LEN		5
++#define CLE_BR_NBR_POS		24
++
++#define CLE_BR_DATA_LEN		16
++#define CLE_BR_DATA_POS		0
++#define CLE_BR_MASK_LEN		16
++#define CLE_BR_MASK_POS		16
++
++#define CLE_KN_PRIO_POS		0
++#define CLE_KN_PRIO_LEN		3
++#define CLE_KN_RPTR_POS		3
++#define CLE_KN_RPTR_LEN		10
++#define CLE_TYPE_POS		0
++#define CLE_TYPE_LEN		2
++
++#define CLE_DSTQIDL_POS		25
++#define CLE_DSTQIDL_LEN		7
++#define CLE_DSTQIDH_POS		0
++#define CLE_DSTQIDH_LEN		5
++#define CLE_FPSEL_POS		21
++#define CLE_FPSEL_LEN		4
++#define CLE_PRIORITY_POS	5
++#define CLE_PRIORITY_LEN	3
++
++#define JMP_ABS			0
++#define JMP_REL			1
++#define JMP_FW			0
++#define JMP_BW			1
++
++enum xgene_cle_ptree_nodes {
++	PKT_TYPE_NODE,
++	LAST_NODE,
++	MAX_NODES
++};
++
++enum xgene_cle_byte_store {
++	NO_BYTE,
++	FIRST_BYTE,
++	SECOND_BYTE,
++	BOTH_BYTES
++};
++
++/* Preclassification operation types */
++enum xgene_cle_node_type {
++	INV,
++	KN,
++	EWDN,
++	RES_NODE
++};
++
++/* Preclassification operation types */
++enum xgene_cle_op_type {
++	EQT,
++	NEQT,
++	LTEQT,
++	GTEQT,
++	AND,
++	NAND
++};
++
++enum xgene_cle_parser {
++	PARSER0,
++	PARSER1,
++	PARSER2,
++	PARSER_ALL
++};
++
++#define XGENE_CLE_DRAM(type)	(((type) & 0xf) << 28)
++enum xgene_cle_dram_type {
++	PKT_RAM,
++	PTREE_RAM = 0xc,
++	AVL_RAM,
++	DB_RAM
++};
++
++enum xgene_cle_cmd_type {
++	CLE_CMD_WR = 1,
++	CLE_CMD_RD = 2,
++	CLE_CMD_AVL_ADD = 8,
++	CLE_CMD_AVL_DEL = 16,
++	CLE_CMD_AVL_SRCH = 32
++};
++
++enum xgene_cle_ptree_dbptrs {
++	DB_RES_DROP,
++	DB_RES_DEF,
++	DB_RES_ACCEPT,
++	DB_MAX_PTRS
++};
++
++struct xgene_cle_ptree_branch {
++	bool valid;
++	u16 next_packet_pointer;
++	bool jump_bw;
++	bool jump_rel;
++	u8 operation;
++	u16 next_node;
++	u8 next_branch;
++	u16 data;
++	u16 mask;
++};
++
++struct xgene_cle_ptree_ewdn {
++	u8 node_type;
++	bool last_node;
++	bool hdr_len_store;
++	u8 hdr_extn;
++	u8 byte_store;
++	u8 search_byte_store;
++	u16 result_pointer;
++	u8 num_branches;
++	struct xgene_cle_ptree_branch branch[6];
++};
++
++struct xgene_cle_ptree_key {
++	u8 priority;
++	u16 result_pointer;
++};
++
++struct xgene_cle_ptree_kn {
++	u8 node_type;
++	u8 num_keys;
++	struct xgene_cle_ptree_key key[32];
++};
++
++struct xgene_cle_dbptr {
++	u8 split_boundary;
++	u8 mirror_nxtfpsel;
++	u8 mirror_fpsel;
++	u16 mirror_dstqid;
++	u8 drop;
++	u8 mirror;
++	u8 hdr_data_split;
++	u64 hopinfomsbs;
++	u8 DR;
++	u8 HR;
++	u64 hopinfomlsbs;
++	u16 h0enq_num;
++	u8 h0fpsel;
++	u8 nxtfpsel;
++	u8 fpsel;
++	u16 dstqid;
++	u8 cle_priority;
++	u8 cle_flowgroup;
++	u8 cle_perflow;
++	u8 cle_insert_timestamp;
++	u8 stash;
++	u8 in;
++	u8 perprioen;
++	u8 perflowgroupen;
++	u8 perflowen;
++	u8 selhash;
++	u8 selhdrext;
++	u8 mirror_nxtfpsel_msb;
++	u8 mirror_fpsel_msb;
++	u8 hfpsel_msb;
++	u8 nxtfpsel_msb;
++	u8 fpsel_msb;
++};
++
++struct xgene_cle_ptree {
++	struct xgene_cle_ptree_ewdn *dn;
++	struct xgene_cle_ptree_kn *kn;
++	struct xgene_cle_dbptr *dbptr;
++	u32 num_dn;
++	u32 num_kn;
++	u32 num_dbptr;
++	u32 start_node;
++	u32 start_pkt;
++	u32 start_dbptr;
++};
++
++struct xgene_enet_cle {
++	void __iomem *base;
++	struct xgene_cle_ptree ptree;
++	enum xgene_cle_parser active_parser;
++	u32 parsers;
++	u32 max_nodes;
++	u32 max_dbptrs;
++	u32 jump_bytes;
++};
++
++extern struct xgene_cle_ops xgene_cle3in_ops;
++
++#endif /* __XGENE_ENET_CLE_H__ */
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h b/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h
+index 02fd979..c7dc313 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h
+@@ -101,6 +101,7 @@ enum xgene_enet_rm {
+ #define MAC_OFFSET			0x30
+ 
+ #define BLOCK_ETH_CSR_OFFSET		0x2000
++#define BLOCK_ETH_CLE_CSR_OFFSET	0x6000
+ #define BLOCK_ETH_RING_IF_OFFSET	0x9000
+ #define BLOCK_ETH_CLKRST_CSR_OFFSET	0xc000
+ #define BLOCK_ETH_DIAG_CSR_OFFSET	0xD000
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_main.c b/drivers/net/ethernet/apm/xgene/xgene_enet_main.c
+index ede9d9a..2138e24 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_main.c
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_main.c
+@@ -93,13 +93,6 @@ static int xgene_enet_refill_bufpool(struct xgene_enet_desc_ring *buf_pool,
+ 	return 0;
+ }
+ 
+-static u16 xgene_enet_dst_ring_num(struct xgene_enet_desc_ring *ring)
+-{
+-	struct xgene_enet_pdata *pdata = netdev_priv(ring->ndev);
+-
+-	return ((u16)pdata->rm << 10) | ring->num;
+-}
+-
+ static u8 xgene_enet_hdr_len(const void *data)
+ {
+ 	const struct ethhdr *eth = data;
+@@ -1310,6 +1303,7 @@ static int xgene_enet_get_resources(struct xgene_enet_pdata *pdata)
+ 	else
+ 		base_addr = pdata->base_addr;
+ 	pdata->eth_csr_addr = base_addr + BLOCK_ETH_CSR_OFFSET;
++	pdata->cle.base = base_addr + BLOCK_ETH_CLE_CSR_OFFSET;
+ 	pdata->eth_ring_if_addr = base_addr + BLOCK_ETH_RING_IF_OFFSET;
+ 	pdata->eth_diag_csr_addr = base_addr + BLOCK_ETH_DIAG_CSR_OFFSET;
+ 	if (pdata->phy_mode == PHY_INTERFACE_MODE_RGMII ||
+@@ -1332,6 +1326,7 @@ static int xgene_enet_init_hw(struct xgene_enet_pdata *pdata)
+ {
+ 	struct net_device *ndev = pdata->ndev;
+ 	struct xgene_enet_desc_ring *buf_pool;
++	struct xgene_enet_cle *enet_cle = &pdata->cle;
+ 	u16 dst_ring_num;
+ 	int ret;
+ 
+@@ -1355,7 +1350,24 @@ static int xgene_enet_init_hw(struct xgene_enet_pdata *pdata)
+ 	}
+ 
+ 	dst_ring_num = xgene_enet_dst_ring_num(pdata->rx_ring);
+-	pdata->port_ops->cle_bypass(pdata, dst_ring_num, buf_pool->id);
++	if (pdata->phy_mode == PHY_INTERFACE_MODE_XGMII) {
++		/* Initialize and Enable  PreClassifier Tree */
++		enet_cle->max_nodes = 512;
++		enet_cle->max_dbptrs = 1024;
++		enet_cle->parsers = 3;
++		enet_cle->active_parser = PARSER_ALL;
++		enet_cle->ptree.start_node = 0;
++		enet_cle->ptree.start_dbptr = 0;
++		enet_cle->jump_bytes = 8;
++		ret = pdata->cle_ops->cle_init(pdata);
++		if (ret) {
++			netdev_err(ndev, "Preclass Tree init error\n");
++			return ret;
++		}
++	} else {
++		pdata->port_ops->cle_bypass(pdata, dst_ring_num, buf_pool->id);
++	}
++
+ 	pdata->mac_ops->init(pdata);
+ 
+ 	return ret;
+@@ -1377,6 +1389,7 @@ static void xgene_enet_setup_ops(struct xgene_enet_pdata *pdata)
+ 	default:
+ 		pdata->mac_ops = &xgene_xgmac_ops;
+ 		pdata->port_ops = &xgene_xgport_ops;
++		pdata->cle_ops = &xgene_cle3in_ops;
+ 		pdata->rm = RM0;
+ 		break;
+ 	}
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_main.h b/drivers/net/ethernet/apm/xgene/xgene_enet_main.h
+index 7c46eea..a4d9298 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_main.h
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_main.h
+@@ -36,6 +36,7 @@
+ #include <linux/if_vlan.h>
+ #include <linux/phy.h>
+ #include "xgene_enet_hw.h"
++#include "xgene_enet_cle.h"
+ #include "xgene_enet_ring2.h"
+ 
+ #define XGENE_DRV_VERSION	"v1.0"
+@@ -145,6 +146,10 @@ struct xgene_ring_ops {
+ 	u32 (*len)(struct xgene_enet_desc_ring *);
+ };
+ 
++struct xgene_cle_ops {
++	int (*cle_init)(struct xgene_enet_pdata *pdata);
++};
++
+ /* ethernet private data */
+ struct xgene_enet_pdata {
+ 	struct net_device *ndev;
+@@ -174,10 +179,12 @@ struct xgene_enet_pdata {
+ 	void __iomem *ring_cmd_addr;
+ 	int phy_mode;
+ 	enum xgene_enet_rm rm;
++	struct xgene_enet_cle cle;
+ 	struct rtnl_link_stats64 stats;
+ 	struct xgene_mac_ops *mac_ops;
+ 	struct xgene_port_ops *port_ops;
+ 	struct xgene_ring_ops *ring_ops;
++	struct xgene_cle_ops *cle_ops;
+ 	struct delayed_work link_work;
+ 	u32 port_id;
+ 	u8 cpu_bufnum;
+@@ -229,6 +236,13 @@ static inline struct device *ndev_to_dev(struct net_device *ndev)
+ 	return ndev->dev.parent;
+ }
+ 
++static inline u16 xgene_enet_dst_ring_num(struct xgene_enet_desc_ring *ring)
++{
++	struct xgene_enet_pdata *pdata = netdev_priv(ring->ndev);
++
++	return ((u16)pdata->rm << 10) | ring->num;
++}
++
+ void xgene_enet_set_ethtool_ops(struct net_device *netdev);
+ 
+ #endif /* __XGENE_ENET_MAIN_H__ */
+-- 
+2.6.0
+
+From a4d0f4907092333fbc11c02abea9f6c3ffbabcfc Mon Sep 17 00:00:00 2001
+From: Iyappan Subramanian <isubramanian@apm.com>
+Date: Mon, 15 Feb 2016 11:35:59 +0700
+Subject: drivers: net: xgene: Add support for RSS
+
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/net/ethernet/apm/xgene/xgene_enet_cle.c | 386 +++++++++++++++++++++++-
+ drivers/net/ethernet/apm/xgene/xgene_enet_cle.h |  41 +++
+ 2 files changed, 422 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+index 6a10529..38767a5 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+@@ -21,6 +21,25 @@
+ 
+ #include "xgene_enet_main.h"
+ 
++/* interfaces to convert structures to HW recognized bit formats */
++static void xgene_cle_sband_to_hw(u8 frag, enum xgene_cle_prot_version ver,
++				  enum xgene_cle_prot_type type, u32 len,
++				  u32 *reg)
++{
++	*reg =  SET_VAL(SB_IPFRAG, frag) |
++		SET_VAL(SB_IPPROT, type) |
++		SET_VAL(SB_IPVER, ver) |
++		SET_VAL(SB_HDRLEN, len);
++}
++
++static void xgene_cle_idt_to_hw(u32 dstqid, u32 fpsel,
++				u32 nfpsel, u32 *idt_reg)
++{
++	*idt_reg =  SET_VAL(IDT_DSTQID, dstqid) |
++		    SET_VAL(IDT_FPSEL, fpsel) |
++		    SET_VAL(IDT_NFPSEL, nfpsel);
++}
++
+ static void xgene_cle_dbptr_to_hw(struct xgene_enet_pdata *pdata,
+ 				  struct xgene_cle_dbptr *dbptr, u32 *buf)
+ {
+@@ -258,29 +277,372 @@ static void xgene_cle_setup_def_dbptr(struct xgene_enet_pdata *pdata,
+ 	}
+ }
+ 
++static int xgene_cle_set_rss_sband(struct xgene_enet_cle *cle)
++{
++	u32 sband, reg = 0;
++	u32 idx = CLE_PKTRAM_SIZE / sizeof(u32);
++	u32 mac_hdr_len = 14;
++	u32 ipv4_ihl = 5;
++	u32 hdr_len;
++	int ret;
++
++	/* Sideband: IPV4/TCP packets */
++	hdr_len = (mac_hdr_len << 5) | ipv4_ihl;
++	xgene_cle_sband_to_hw(0, XGENE_CLE_IPV4, XGENE_CLE_TCP, hdr_len, &reg);
++	sband = reg;
++
++	/* Sideband: IPv4/UDP packets */
++	hdr_len = (mac_hdr_len << 5) | ipv4_ihl;
++	xgene_cle_sband_to_hw(1, XGENE_CLE_IPV4, XGENE_CLE_UDP, hdr_len, &reg);
++	sband |= (reg << 16);
++
++	ret = xgene_cle_dram_wr(cle, &sband, 1, idx, PKT_RAM, CLE_CMD_WR);
++	if (ret)
++		return ret;
++
++	/* Sideband: IPv4/RAW packets */
++	hdr_len = (mac_hdr_len << 5) | ipv4_ihl;
++	xgene_cle_sband_to_hw(0, XGENE_CLE_IPV4, XGENE_CLE_OTHER,
++			      hdr_len, &reg);
++	sband = reg;
++
++	/* Sideband: Ethernet II/RAW packets */
++	hdr_len = (mac_hdr_len << 5);
++	xgene_cle_sband_to_hw(0, XGENE_CLE_IPV4, XGENE_CLE_OTHER,
++			      hdr_len, &reg);
++	sband |= (reg << 16);
++
++	ret = xgene_cle_dram_wr(cle, &sband, 1, idx + 1, PKT_RAM, CLE_CMD_WR);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int xgene_cle_set_rss_skeys(struct xgene_enet_cle *cle)
++{
++	int ret = 0;
++	u32 secret_key_ipv4[4];  /* 16 Bytes*/
++
++	get_random_bytes(secret_key_ipv4, 16);
++	ret = xgene_cle_dram_wr(cle, secret_key_ipv4, 4, 0,
++				RSS_IPV4_HASH_SKEY, CLE_CMD_WR);
++	return ret;
++}
++
++static int xgene_cle_set_rss_idt(struct xgene_enet_pdata *pdata)
++{
++	int i, ret = 0;
++	u32 fpsel, dstqid, nfpsel, idt_reg;
++	u16 pool_id;
++
++	for (i = 0; i < XGENE_CLE_IDT_ENTRIES; i++) {
++		pool_id = pdata->rx_ring->buf_pool->id;
++		fpsel = xgene_enet_ring_bufnum(pool_id) - 0x20;
++		dstqid = xgene_enet_dst_ring_num(pdata->rx_ring);
++		nfpsel = 0;
++		idt_reg = 0;
++
++		xgene_cle_idt_to_hw(dstqid, fpsel, nfpsel, &idt_reg);
++		ret = xgene_cle_dram_wr(&pdata->cle, &idt_reg, 1, i,
++					RSS_IDT, CLE_CMD_WR);
++		if (ret)
++			return ret;
++	}
++
++	ret = xgene_cle_set_rss_skeys(&pdata->cle);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int xgene_cle_setup_rss(struct xgene_enet_pdata *pdata)
++{
++	struct xgene_enet_cle *cle = &pdata->cle;
++	void __iomem *base = cle->base;
++	u32 offset, val = 0;
++	int i, ret = 0;
++
++	offset = CLE_PORT_OFFSET;
++	for (i = 0; i < cle->parsers; i++) {
++		if (cle->active_parser != PARSER_ALL)
++			offset = cle->active_parser * CLE_PORT_OFFSET;
++		else
++			offset = i * CLE_PORT_OFFSET;
++
++		/* enable RSS */
++		val = (RSS_IPV4_12B << 1) | 0x1;
++		writel(val, base + RSS_CTRL0 + offset);
++	}
++
++	/* setup sideband data */
++	ret = xgene_cle_set_rss_sband(cle);
++	if (ret)
++		return ret;
++
++	/* setup indirection table */
++	ret = xgene_cle_set_rss_idt(pdata);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
+ static int xgene_enet_cle_init(struct xgene_enet_pdata *pdata)
+ {
+ 	struct xgene_enet_cle *enet_cle = &pdata->cle;
+ 	struct xgene_cle_ptree *ptree = &enet_cle->ptree;
+ 	struct xgene_cle_dbptr dbptr[DB_MAX_PTRS];
+ 	struct xgene_cle_ptree_kn kn;
++	struct xgene_cle_ptree_branch *br;
+ 	u32 def_qid, def_fpsel, pool_id;
++	int ret;
+ 	struct xgene_cle_ptree_ewdn ptree_dn[] = {
+ 		{
+ 			/* PKT_TYPE_NODE */
+ 			.node_type = EWDN,
+ 			.last_node = 0,
+-			.hdr_len_store = 0,
++			.hdr_len_store = 1,
+ 			.hdr_extn = NO_BYTE,
+ 			.byte_store = NO_BYTE,
+ 			.search_byte_store = NO_BYTE,
+ 			.result_pointer = DB_RES_DROP,
+-			.num_branches = 1,
++			.num_branches = 2,
+ 			.branch = {
+ 				{
+-					/* Allow all packet type */
++					/* IPV4 */
+ 					.valid = 0,
+-					.next_packet_pointer = 0,
++					.next_packet_pointer = 22,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = PKT_PROT_NODE,
++					.next_branch = 0,
++					.data = 0x8,
++					.mask = 0xffff
++				},
++				{
++					.valid = 0,
++					.next_packet_pointer = 262,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = LAST_NODE,
++					.next_branch = 0,
++					.data = 0x0,
++					.mask = 0xffff
++				}
++			},
++		},
++		{
++			/* PKT_PROT_NODE */
++			.node_type = EWDN,
++			.last_node = 0,
++			.hdr_len_store = 1,
++			.hdr_extn = NO_BYTE,
++			.byte_store = NO_BYTE,
++			.search_byte_store = NO_BYTE,
++			.result_pointer = DB_RES_DROP,
++			.num_branches = 3,
++			.branch = {
++				{
++					/* TCP */
++					.valid = 1,
++					.next_packet_pointer = 26,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_TCP_NODE,
++					.next_branch = 0,
++					.data = 0x0600,
++					.mask = 0xffff
++				},
++				{
++					/* UDP */
++					.valid = 1,
++					.next_packet_pointer = 26,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_UDP_NODE,
++					.next_branch = 0,
++					.data = 0x1100,
++					.mask = 0xffff
++				},
++				{
++					.valid = 0,
++					.next_packet_pointer = 260,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = LAST_NODE,
++					.next_branch = 0,
++					.data = 0x0,
++					.mask = 0xffff
++				}
++			}
++		},
++		{
++			/* RSS_IPV4_TCP_NODE */
++			.node_type = EWDN,
++			.last_node = 0,
++			.hdr_len_store = 1,
++			.hdr_extn = NO_BYTE,
++			.byte_store = NO_BYTE,
++			.search_byte_store = BOTH_BYTES,
++			.result_pointer = DB_RES_DROP,
++			.num_branches = 6,
++			.branch = {
++				{
++					/* SRC IPV4 B01 */
++					.valid = 0,
++					.next_packet_pointer = 28,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_TCP_NODE,
++					.next_branch = 1,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* SRC IPV4 B23 */
++					.valid = 0,
++					.next_packet_pointer = 30,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_TCP_NODE,
++					.next_branch = 2,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* DST IPV4 B01 */
++					.valid = 0,
++					.next_packet_pointer = 32,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_TCP_NODE,
++					.next_branch = 3,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* DST IPV4 B23 */
++					.valid = 0,
++					.next_packet_pointer = 34,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_TCP_NODE,
++					.next_branch = 4,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* TCP SRC Port */
++					.valid = 0,
++					.next_packet_pointer = 36,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_TCP_NODE,
++					.next_branch = 5,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* TCP DST Port */
++					.valid = 0,
++					.next_packet_pointer = 256,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = LAST_NODE,
++					.next_branch = 0,
++					.data = 0x0,
++					.mask = 0xffff
++				}
++			}
++		},
++		{
++			/* RSS_IPV4_UDP_NODE */
++			.node_type = EWDN,
++			.last_node = 0,
++			.hdr_len_store = 1,
++			.hdr_extn = NO_BYTE,
++			.byte_store = NO_BYTE,
++			.search_byte_store = BOTH_BYTES,
++			.result_pointer = DB_RES_DROP,
++			.num_branches = 6,
++			.branch = {
++				{
++					/* SRC IPV4 B01 */
++					.valid = 0,
++					.next_packet_pointer = 28,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_UDP_NODE,
++					.next_branch = 1,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* SRC IPV4 B23 */
++					.valid = 0,
++					.next_packet_pointer = 30,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_UDP_NODE,
++					.next_branch = 2,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* DST IPV4 B01 */
++					.valid = 0,
++					.next_packet_pointer = 32,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_UDP_NODE,
++					.next_branch = 3,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* DST IPV4 B23 */
++					.valid = 0,
++					.next_packet_pointer = 34,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_UDP_NODE,
++					.next_branch = 4,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* TCP SRC Port */
++					.valid = 0,
++					.next_packet_pointer = 36,
++					.jump_bw = JMP_FW,
++					.jump_rel = JMP_ABS,
++					.operation = EQT,
++					.next_node = RSS_IPV4_UDP_NODE,
++					.next_branch = 5,
++					.data = 0x0,
++					.mask = 0xffff
++				},
++				{
++					/* TCP DST Port */
++					.valid = 0,
++					.next_packet_pointer = 256,
+ 					.jump_bw = JMP_FW,
+ 					.jump_rel = JMP_ABS,
+ 					.operation = EQT,
+@@ -295,7 +657,7 @@ static int xgene_enet_cle_init(struct xgene_enet_pdata *pdata)
+ 			/* LAST NODE */
+ 			.node_type = EWDN,
+ 			.last_node = 1,
+-			.hdr_len_store = 0,
++			.hdr_len_store = 1,
+ 			.hdr_extn = NO_BYTE,
+ 			.byte_store = NO_BYTE,
+ 			.search_byte_store = NO_BYTE,
+@@ -318,6 +680,20 @@ static int xgene_enet_cle_init(struct xgene_enet_pdata *pdata)
+ 	};
+ 
+ 	ptree->start_pkt = 12; /* Ethertype */
++	if (pdata->phy_mode == PHY_INTERFACE_MODE_XGMII) {
++		ret = xgene_cle_setup_rss(pdata);
++		if (ret) {
++			netdev_err(pdata->ndev, "RSS initialization failed\n");
++			return ret;
++		}
++	} else {
++		br = &ptree_dn[PKT_PROT_NODE].branch[0];
++		br->valid = 0;
++		br->next_packet_pointer = 260;
++		br->next_node = LAST_NODE;
++		br->data = 0x0000;
++		br->mask = 0xffff;
++	}
+ 
+ 	def_qid = xgene_enet_dst_ring_num(pdata->rx_ring);
+ 	pool_id = pdata->rx_ring->buf_pool->id;
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h
+index cc87f0e..572bdc5 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.h
+@@ -34,6 +34,7 @@
+ #define SPPTR0			0x0104
+ #define DFCLSRESDBPTR0		0x0108
+ #define DFCLSRESDB00		0x010c
++#define RSS_CTRL0		0x0000013c
+ 
+ #define CLE_CMD_TO		10	/* ms */
+ #define CLE_PKTRAM_SIZE		256	/* bytes */
+@@ -98,6 +99,9 @@
+ 
+ enum xgene_cle_ptree_nodes {
+ 	PKT_TYPE_NODE,
++	PKT_PROT_NODE,
++	RSS_IPV4_TCP_NODE,
++	RSS_IPV4_UDP_NODE,
+ 	LAST_NODE,
+ 	MAX_NODES
+ };
+@@ -137,6 +141,8 @@ enum xgene_cle_parser {
+ #define XGENE_CLE_DRAM(type)	(((type) & 0xf) << 28)
+ enum xgene_cle_dram_type {
+ 	PKT_RAM,
++	RSS_IDT,
++	RSS_IPV4_HASH_SKEY,
+ 	PTREE_RAM = 0xc,
+ 	AVL_RAM,
+ 	DB_RAM
+@@ -150,6 +156,22 @@ enum xgene_cle_cmd_type {
+ 	CLE_CMD_AVL_SRCH = 32
+ };
+ 
++enum xgene_cle_ipv4_rss_hashtype {
++	RSS_IPV4_8B,
++	RSS_IPV4_12B,
++};
++
++enum xgene_cle_prot_type {
++	XGENE_CLE_TCP,
++	XGENE_CLE_UDP,
++	XGENE_CLE_ESP,
++	XGENE_CLE_OTHER
++};
++
++enum xgene_cle_prot_version {
++	XGENE_CLE_IPV4,
++};
++
+ enum xgene_cle_ptree_dbptrs {
+ 	DB_RES_DROP,
+ 	DB_RES_DEF,
+@@ -157,6 +179,25 @@ enum xgene_cle_ptree_dbptrs {
+ 	DB_MAX_PTRS
+ };
+ 
++/* RSS sideband signal info */
++#define SB_IPFRAG_POS	0
++#define SB_IPFRAG_LEN	1
++#define SB_IPPROT_POS	1
++#define SB_IPPROT_LEN	2
++#define SB_IPVER_POS	3
++#define SB_IPVER_LEN	1
++#define SB_HDRLEN_POS	4
++#define SB_HDRLEN_LEN	12
++
++/* RSS indirection table */
++#define XGENE_CLE_IDT_ENTRIES	128
++#define IDT_DSTQID_POS		0
++#define IDT_DSTQID_LEN		12
++#define IDT_FPSEL_POS		12
++#define IDT_FPSEL_LEN		4
++#define IDT_NFPSEL_POS		16
++#define IDT_NFPSEL_LEN		4
++
+ struct xgene_cle_ptree_branch {
+ 	bool valid;
+ 	u16 next_packet_pointer;
+-- 
+2.6.0
+
+From 44831d04b371bb66a24a60f676ba1ded9039a3a1 Mon Sep 17 00:00:00 2001
+From: Iyappan Subramanian <isubramanian@apm.com>
+Date: Tue, 16 Feb 2016 08:09:38 +0700
+Subject: drivers: net: xgene: Add support for multiple queues
+
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/net/ethernet/apm/xgene/xgene_enet_cle.c   |  11 +-
+ drivers/net/ethernet/apm/xgene/xgene_enet_hw.c    |  12 +
+ drivers/net/ethernet/apm/xgene/xgene_enet_hw.h    |   5 +
+ drivers/net/ethernet/apm/xgene/xgene_enet_main.c  | 462 +++++++++++++---------
+ drivers/net/ethernet/apm/xgene/xgene_enet_main.h  |  21 +-
+ drivers/net/ethernet/apm/xgene/xgene_enet_ring2.c |  12 +
+ 6 files changed, 326 insertions(+), 197 deletions(-)
+
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+index 38767a5..b6c13d6 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_cle.c
+@@ -333,13 +333,14 @@ static int xgene_cle_set_rss_skeys(struct xgene_enet_cle *cle)
+ static int xgene_cle_set_rss_idt(struct xgene_enet_pdata *pdata)
+ {
+ 	int i, ret = 0;
+-	u32 fpsel, dstqid, nfpsel, idt_reg;
++	u32 fpsel, dstqid, nfpsel, idt_reg, idx;
+ 	u16 pool_id;
+ 
+ 	for (i = 0; i < XGENE_CLE_IDT_ENTRIES; i++) {
+-		pool_id = pdata->rx_ring->buf_pool->id;
++		idx = i % pdata->rxq_cnt;
++		pool_id = pdata->rx_ring[idx]->buf_pool->id;
+ 		fpsel = xgene_enet_ring_bufnum(pool_id) - 0x20;
+-		dstqid = xgene_enet_dst_ring_num(pdata->rx_ring);
++		dstqid = xgene_enet_dst_ring_num(pdata->rx_ring[idx]);
+ 		nfpsel = 0;
+ 		idt_reg = 0;
+ 
+@@ -695,8 +696,8 @@ static int xgene_enet_cle_init(struct xgene_enet_pdata *pdata)
+ 		br->mask = 0xffff;
+ 	}
+ 
+-	def_qid = xgene_enet_dst_ring_num(pdata->rx_ring);
+-	pool_id = pdata->rx_ring->buf_pool->id;
++	def_qid = xgene_enet_dst_ring_num(pdata->rx_ring[0]);
++	pool_id = pdata->rx_ring[0]->buf_pool->id;
+ 	def_fpsel = xgene_enet_ring_bufnum(pool_id) - 0x20;
+ 
+ 	memset(dbptr, 0, sizeof(struct xgene_cle_dbptr) * DB_MAX_PTRS);
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_hw.c b/drivers/net/ethernet/apm/xgene/xgene_enet_hw.c
+index c882737..ede0c75 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_hw.c
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_hw.c
+@@ -204,6 +204,17 @@ static u32 xgene_enet_ring_len(struct xgene_enet_desc_ring *ring)
+ 	return num_msgs;
+ }
+ 
++static void xgene_enet_setup_coalescing(struct xgene_enet_desc_ring *ring)
++{
++	u32 data = 0x7777;
++
++	xgene_enet_ring_wr32(ring, CSR_PBM_COAL, 0x8e);
++	xgene_enet_ring_wr32(ring, CSR_PBM_CTICK1, data);
++	xgene_enet_ring_wr32(ring, CSR_PBM_CTICK2, data << 16);
++	xgene_enet_ring_wr32(ring, CSR_THRESHOLD0_SET1, 0x40);
++	xgene_enet_ring_wr32(ring, CSR_THRESHOLD1_SET1, 0x80);
++}
++
+ void xgene_enet_parse_error(struct xgene_enet_desc_ring *ring,
+ 			    struct xgene_enet_pdata *pdata,
+ 			    enum xgene_enet_err_code status)
+@@ -905,4 +916,5 @@ struct xgene_ring_ops xgene_ring1_ops = {
+ 	.clear = xgene_enet_clear_ring,
+ 	.wr_cmd = xgene_enet_wr_cmd,
+ 	.len = xgene_enet_ring_len,
++	.coalesce = xgene_enet_setup_coalescing,
+ };
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h b/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h
+index c7dc313..40fcf90 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_hw.h
+@@ -54,6 +54,11 @@ enum xgene_enet_rm {
+ #define IS_BUFFER_POOL		BIT(20)
+ #define PREFETCH_BUF_EN		BIT(21)
+ #define CSR_RING_ID_BUF		0x000c
++#define CSR_PBM_COAL		0x0014
++#define CSR_PBM_CTICK1		0x001c
++#define CSR_PBM_CTICK2		0x0020
++#define CSR_THRESHOLD0_SET1	0x0030
++#define CSR_THRESHOLD1_SET1	0x0034
+ #define CSR_RING_NE_INT_MODE	0x017c
+ #define CSR_RING_CONFIG		0x006c
+ #define CSR_RING_WR_BASE	0x0070
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_main.c b/drivers/net/ethernet/apm/xgene/xgene_enet_main.c
+index 2138e24..eec69aa 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_main.c
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_main.c
+@@ -170,7 +170,6 @@ static int xgene_enet_tx_completion(struct xgene_enet_desc_ring *cp_ring,
+ static u64 xgene_enet_work_msg(struct sk_buff *skb)
+ {
+ 	struct net_device *ndev = skb->dev;
+-	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
+ 	struct iphdr *iph;
+ 	u8 l3hlen = 0, l4hlen = 0;
+ 	u8 ethhdr, proto = 0, csum_enable = 0;
+@@ -216,10 +215,6 @@ static u64 xgene_enet_work_msg(struct sk_buff *skb)
+ 			if (!mss || ((skb->len - hdr_len) <= mss))
+ 				goto out;
+ 
+-			if (mss != pdata->mss) {
+-				pdata->mss = mss;
+-				pdata->mac_ops->set_mss(pdata);
+-			}
+ 			hopinfo |= SET_BIT(ET);
+ 		}
+ 	} else if (iph->protocol == IPPROTO_UDP) {
+@@ -401,7 +396,7 @@ out:
+ 	raw_desc->m0 = cpu_to_le64(SET_VAL(LL, ll) | SET_VAL(NV, nv) |
+ 				   SET_VAL(USERINFO, tx_ring->tail));
+ 	tx_ring->cp_ring->cp_skb[tx_ring->tail] = skb;
+-	pdata->tx_level += count;
++	pdata->tx_level[tx_ring->cp_ring->index] += count;
+ 	tx_ring->tail = tail;
+ 
+ 	return count;
+@@ -411,15 +406,17 @@ static netdev_tx_t xgene_enet_start_xmit(struct sk_buff *skb,
+ 					 struct net_device *ndev)
+ {
+ 	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
+-	struct xgene_enet_desc_ring *tx_ring = pdata->tx_ring;
+-	u32 tx_level = pdata->tx_level;
++	struct xgene_enet_desc_ring *tx_ring;
++	int index = skb->queue_mapping;
++	u32 tx_level = pdata->tx_level[index];
+ 	int count;
+ 
+-	if (tx_level < pdata->txc_level)
+-		tx_level += ((typeof(pdata->tx_level))~0U);
++	tx_ring = pdata->tx_ring[index];
++	if (tx_level < pdata->txc_level[index])
++		tx_level += ((typeof(pdata->tx_level[index]))~0U);
+ 
+-	if ((tx_level - pdata->txc_level) > pdata->tx_qcnt_hi) {
+-		netif_stop_queue(ndev);
++	if ((tx_level - pdata->txc_level[index]) > pdata->tx_qcnt_hi) {
++		netif_stop_subqueue(ndev, index);
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
+@@ -518,7 +515,8 @@ static bool is_rx_desc(struct xgene_enet_raw_desc *raw_desc)
+ static int xgene_enet_process_ring(struct xgene_enet_desc_ring *ring,
+ 				   int budget)
+ {
+-	struct xgene_enet_pdata *pdata = netdev_priv(ring->ndev);
++	struct net_device *ndev = ring->ndev;
++	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
+ 	struct xgene_enet_raw_desc *raw_desc, *exp_desc;
+ 	u16 head = ring->head;
+ 	u16 slots = ring->slots - 1;
+@@ -562,7 +560,7 @@ static int xgene_enet_process_ring(struct xgene_enet_desc_ring *ring,
+ 		desc_count++;
+ 		processed++;
+ 		if (is_completion)
+-			pdata->txc_level += desc_count;
++			pdata->txc_level[ring->index] += desc_count;
+ 
+ 		if (ret)
+ 			break;
+@@ -572,8 +570,8 @@ static int xgene_enet_process_ring(struct xgene_enet_desc_ring *ring,
+ 		pdata->ring_ops->wr_cmd(ring, -count);
+ 		ring->head = head;
+ 
+-		if (netif_queue_stopped(ring->ndev))
+-			netif_start_queue(ring->ndev);
++		if (__netif_subqueue_stopped(ndev, ring->index))
++			netif_start_subqueue(ndev, ring->index);
+ 	}
+ 
+ 	return processed;
+@@ -598,8 +596,16 @@ static int xgene_enet_napi(struct napi_struct *napi, const int budget)
+ static void xgene_enet_timeout(struct net_device *ndev)
+ {
+ 	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
++	struct netdev_queue *txq;
++	int i;
+ 
+ 	pdata->mac_ops->reset(pdata);
++
++	for (i = 0; i < pdata->txq_cnt; i++) {
++		txq = netdev_get_tx_queue(ndev, i);
++		txq->trans_start = jiffies;
++		netif_tx_start_queue(txq);
++	}
+ }
+ 
+ static int xgene_enet_register_irq(struct net_device *ndev)
+@@ -607,17 +613,21 @@ static int xgene_enet_register_irq(struct net_device *ndev)
+ 	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
+ 	struct device *dev = ndev_to_dev(ndev);
+ 	struct xgene_enet_desc_ring *ring;
+-	int ret;
++	int ret = 0, i;
+ 
+-	ring = pdata->rx_ring;
+-	irq_set_status_flags(ring->irq, IRQ_DISABLE_UNLAZY);
+-	ret = devm_request_irq(dev, ring->irq, xgene_enet_rx_irq,
+-			       IRQF_SHARED, ring->irq_name, ring);
+-	if (ret)
+-		netdev_err(ndev, "Failed to request irq %s\n", ring->irq_name);
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		ring = pdata->rx_ring[i];
++		irq_set_status_flags(ring->irq, IRQ_DISABLE_UNLAZY);
++		ret = devm_request_irq(dev, ring->irq, xgene_enet_rx_irq,
++				       IRQF_SHARED, ring->irq_name, ring);
++		if (ret) {
++			netdev_err(ndev, "Failed to request irq %s\n",
++				   ring->irq_name);
++		}
++	}
+ 
+-	if (pdata->cq_cnt) {
+-		ring = pdata->tx_ring->cp_ring;
++	for (i = 0; i < pdata->cq_cnt; i++) {
++		ring = pdata->tx_ring[i]->cp_ring;
+ 		irq_set_status_flags(ring->irq, IRQ_DISABLE_UNLAZY);
+ 		ret = devm_request_irq(dev, ring->irq, xgene_enet_rx_irq,
+ 				       IRQF_SHARED, ring->irq_name, ring);
+@@ -635,15 +645,19 @@ static void xgene_enet_free_irq(struct net_device *ndev)
+ 	struct xgene_enet_pdata *pdata;
+ 	struct xgene_enet_desc_ring *ring;
+ 	struct device *dev;
++	int i;
+ 
+ 	pdata = netdev_priv(ndev);
+ 	dev = ndev_to_dev(ndev);
+-	ring = pdata->rx_ring;
+-	irq_clear_status_flags(ring->irq, IRQ_DISABLE_UNLAZY);
+-	devm_free_irq(dev, ring->irq, ring);
+ 
+-	if (pdata->cq_cnt) {
+-		ring = pdata->tx_ring->cp_ring;
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		ring = pdata->rx_ring[i];
++		irq_clear_status_flags(ring->irq, IRQ_DISABLE_UNLAZY);
++		devm_free_irq(dev, ring->irq, ring);
++	}
++
++	for (i = 0; i < pdata->cq_cnt; i++) {
++		ring = pdata->tx_ring[i]->cp_ring;
+ 		irq_clear_status_flags(ring->irq, IRQ_DISABLE_UNLAZY);
+ 		devm_free_irq(dev, ring->irq, ring);
+ 	}
+@@ -652,12 +666,15 @@ static void xgene_enet_free_irq(struct net_device *ndev)
+ static void xgene_enet_napi_enable(struct xgene_enet_pdata *pdata)
+ {
+ 	struct napi_struct *napi;
++	int i;
+ 
+-	napi = &pdata->rx_ring->napi;
+-	napi_enable(napi);
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		napi = &pdata->rx_ring[i]->napi;
++		napi_enable(napi);
++	}
+ 
+-	if (pdata->cq_cnt) {
+-		napi = &pdata->tx_ring->cp_ring->napi;
++	for (i = 0; i < pdata->cq_cnt; i++) {
++		napi = &pdata->tx_ring[i]->cp_ring->napi;
+ 		napi_enable(napi);
+ 	}
+ }
+@@ -665,12 +682,15 @@ static void xgene_enet_napi_enable(struct xgene_enet_pdata *pdata)
+ static void xgene_enet_napi_disable(struct xgene_enet_pdata *pdata)
+ {
+ 	struct napi_struct *napi;
++	int i;
+ 
+-	napi = &pdata->rx_ring->napi;
+-	napi_disable(napi);
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		napi = &pdata->rx_ring[i]->napi;
++		napi_disable(napi);
++	}
+ 
+-	if (pdata->cq_cnt) {
+-		napi = &pdata->tx_ring->cp_ring->napi;
++	for (i = 0; i < pdata->cq_cnt; i++) {
++		napi = &pdata->tx_ring[i]->cp_ring->napi;
+ 		napi_disable(napi);
+ 	}
+ }
+@@ -681,6 +701,14 @@ static int xgene_enet_open(struct net_device *ndev)
+ 	struct xgene_mac_ops *mac_ops = pdata->mac_ops;
+ 	int ret;
+ 
++	ret = netif_set_real_num_tx_queues(ndev, pdata->txq_cnt);
++	if (ret)
++		return ret;
++
++	ret = netif_set_real_num_rx_queues(ndev, pdata->rxq_cnt);
++	if (ret)
++		return ret;
++
+ 	mac_ops->tx_enable(pdata);
+ 	mac_ops->rx_enable(pdata);
+ 
+@@ -703,6 +731,7 @@ static int xgene_enet_close(struct net_device *ndev)
+ {
+ 	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
+ 	struct xgene_mac_ops *mac_ops = pdata->mac_ops;
++	int i;
+ 
+ 	netif_stop_queue(ndev);
+ 
+@@ -713,9 +742,10 @@ static int xgene_enet_close(struct net_device *ndev)
+ 
+ 	mac_ops->tx_disable(pdata);
+ 	mac_ops->rx_disable(pdata);
+-	xgene_enet_napi_disable(pdata);
+ 	xgene_enet_free_irq(ndev);
+-	xgene_enet_process_ring(pdata->rx_ring, -1);
++	xgene_enet_napi_disable(pdata);
++	for (i = 0; i < pdata->rxq_cnt; i++)
++		xgene_enet_process_ring(pdata->rx_ring[i], -1);
+ 
+ 	return 0;
+ }
+@@ -735,18 +765,26 @@ static void xgene_enet_delete_ring(struct xgene_enet_desc_ring *ring)
+ static void xgene_enet_delete_desc_rings(struct xgene_enet_pdata *pdata)
+ {
+ 	struct xgene_enet_desc_ring *buf_pool;
++	struct xgene_enet_desc_ring *ring;
++	int i;
+ 
+-	if (pdata->tx_ring) {
+-		xgene_enet_delete_ring(pdata->tx_ring);
+-		pdata->tx_ring = NULL;
++	for (i = 0; i < pdata->txq_cnt; i++) {
++		ring = pdata->tx_ring[i];
++		if (ring) {
++			xgene_enet_delete_ring(ring);
++			pdata->tx_ring[i] = NULL;
++		}
+ 	}
+ 
+-	if (pdata->rx_ring) {
+-		buf_pool = pdata->rx_ring->buf_pool;
+-		xgene_enet_delete_bufpool(buf_pool);
+-		xgene_enet_delete_ring(buf_pool);
+-		xgene_enet_delete_ring(pdata->rx_ring);
+-		pdata->rx_ring = NULL;
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		ring = pdata->rx_ring[i];
++		if (ring) {
++			buf_pool = ring->buf_pool;
++			xgene_enet_delete_bufpool(buf_pool);
++			xgene_enet_delete_ring(buf_pool);
++			xgene_enet_delete_ring(ring);
++			pdata->rx_ring[i] = NULL;
++		}
+ 	}
+ }
+ 
+@@ -801,24 +839,29 @@ static void xgene_enet_free_desc_rings(struct xgene_enet_pdata *pdata)
+ {
+ 	struct device *dev = &pdata->pdev->dev;
+ 	struct xgene_enet_desc_ring *ring;
++	int i;
+ 
+-	ring = pdata->tx_ring;
+-	if (ring) {
+-		if (ring->cp_ring && ring->cp_ring->cp_skb)
+-			devm_kfree(dev, ring->cp_ring->cp_skb);
+-		if (ring->cp_ring && pdata->cq_cnt)
+-			xgene_enet_free_desc_ring(ring->cp_ring);
+-		xgene_enet_free_desc_ring(ring);
+-	}
+-
+-	ring = pdata->rx_ring;
+-	if (ring) {
+-		if (ring->buf_pool) {
+-			if (ring->buf_pool->rx_skb)
+-				devm_kfree(dev, ring->buf_pool->rx_skb);
+-			xgene_enet_free_desc_ring(ring->buf_pool);
++	for (i = 0; i < pdata->txq_cnt; i++) {
++		ring = pdata->tx_ring[i];
++		if (ring) {
++			if (ring->cp_ring && ring->cp_ring->cp_skb)
++				devm_kfree(dev, ring->cp_ring->cp_skb);
++			if (ring->cp_ring && pdata->cq_cnt)
++				xgene_enet_free_desc_ring(ring->cp_ring);
++			xgene_enet_free_desc_ring(ring);
++		}
++	}
++
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		ring = pdata->rx_ring[i];
++		if (ring) {
++			if (ring->buf_pool) {
++				if (ring->buf_pool->rx_skb)
++					devm_kfree(dev, ring->buf_pool->rx_skb);
++				xgene_enet_free_desc_ring(ring->buf_pool);
++			}
++			xgene_enet_free_desc_ring(ring);
+ 		}
+-		xgene_enet_free_desc_ring(ring);
+ 	}
+ }
+ 
+@@ -932,104 +975,120 @@ static int xgene_enet_create_desc_rings(struct net_device *ndev)
+ 	u8 bp_bufnum = pdata->bp_bufnum;
+ 	u16 ring_num = pdata->ring_num;
+ 	u16 ring_id;
+-	int ret, size;
+-
+-	/* allocate rx descriptor ring */
+-	owner = xgene_derive_ring_owner(pdata);
+-	ring_id = xgene_enet_get_ring_id(RING_OWNER_CPU, cpu_bufnum++);
+-	rx_ring = xgene_enet_create_desc_ring(ndev, ring_num++,
+-					      RING_CFGSIZE_16KB, ring_id);
+-	if (!rx_ring) {
+-		ret = -ENOMEM;
+-		goto err;
+-	}
+-
+-	/* allocate buffer pool for receiving packets */
+-	owner = xgene_derive_ring_owner(pdata);
+-	ring_id = xgene_enet_get_ring_id(owner, bp_bufnum++);
+-	buf_pool = xgene_enet_create_desc_ring(ndev, ring_num++,
+-					       RING_CFGSIZE_2KB, ring_id);
+-	if (!buf_pool) {
+-		ret = -ENOMEM;
+-		goto err;
+-	}
+-
+-	rx_ring->nbufpool = NUM_BUFPOOL;
+-	rx_ring->buf_pool = buf_pool;
+-	rx_ring->irq = pdata->rx_irq;
+-	if (!pdata->cq_cnt) {
+-		snprintf(rx_ring->irq_name, IRQ_ID_SIZE, "%s-rx-txc",
+-			 ndev->name);
+-	} else {
+-		snprintf(rx_ring->irq_name, IRQ_ID_SIZE, "%s-rx", ndev->name);
+-	}
+-	buf_pool->rx_skb = devm_kcalloc(dev, buf_pool->slots,
+-					sizeof(struct sk_buff *), GFP_KERNEL);
+-	if (!buf_pool->rx_skb) {
+-		ret = -ENOMEM;
+-		goto err;
+-	}
++	int i, ret, size;
+ 
+-	buf_pool->dst_ring_num = xgene_enet_dst_ring_num(buf_pool);
+-	rx_ring->buf_pool = buf_pool;
+-	pdata->rx_ring = rx_ring;
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		/* allocate rx descriptor ring */
++		owner = xgene_derive_ring_owner(pdata);
++		ring_id = xgene_enet_get_ring_id(RING_OWNER_CPU, cpu_bufnum++);
++		rx_ring = xgene_enet_create_desc_ring(ndev, ring_num++,
++						      RING_CFGSIZE_16KB,
++						      ring_id);
++		if (!rx_ring) {
++			ret = -ENOMEM;
++			goto err;
++		}
+ 
+-	/* allocate tx descriptor ring */
+-	owner = xgene_derive_ring_owner(pdata);
+-	ring_id = xgene_enet_get_ring_id(owner, eth_bufnum++);
+-	tx_ring = xgene_enet_create_desc_ring(ndev, ring_num++,
+-					      RING_CFGSIZE_16KB, ring_id);
+-	if (!tx_ring) {
+-		ret = -ENOMEM;
+-		goto err;
+-	}
++		/* allocate buffer pool for receiving packets */
++		owner = xgene_derive_ring_owner(pdata);
++		ring_id = xgene_enet_get_ring_id(owner, bp_bufnum++);
++		buf_pool = xgene_enet_create_desc_ring(ndev, ring_num++,
++						       RING_CFGSIZE_2KB,
++						       ring_id);
++		if (!buf_pool) {
++			ret = -ENOMEM;
++			goto err;
++		}
+ 
+-	size = (tx_ring->slots / 2) * sizeof(__le64) * MAX_EXP_BUFFS;
+-	tx_ring->exp_bufs = dma_zalloc_coherent(dev, size, &dma_exp_bufs,
++		rx_ring->nbufpool = NUM_BUFPOOL;
++		rx_ring->buf_pool = buf_pool;
++		rx_ring->irq = pdata->irqs[i];
++		if (!pdata->cq_cnt) {
++			snprintf(rx_ring->irq_name, IRQ_ID_SIZE, "%s-rx-txc",
++				 ndev->name);
++		} else {
++			snprintf(rx_ring->irq_name, IRQ_ID_SIZE, "%s-rx%d",
++				 ndev->name, i);
++		}
++		buf_pool->rx_skb = devm_kcalloc(dev, buf_pool->slots,
++						sizeof(struct sk_buff *),
+ 						GFP_KERNEL);
+-	if (!tx_ring->exp_bufs) {
+-		ret = -ENOMEM;
+-		goto err;
+-	}
++		if (!buf_pool->rx_skb) {
++			ret = -ENOMEM;
++			goto err;
++		}
+ 
+-	pdata->tx_ring = tx_ring;
++		buf_pool->dst_ring_num = xgene_enet_dst_ring_num(buf_pool);
++		rx_ring->buf_pool = buf_pool;
++		pdata->rx_ring[i] = rx_ring;
++	}
+ 
+-	if (!pdata->cq_cnt) {
+-		cp_ring = pdata->rx_ring;
+-	} else {
+-		/* allocate tx completion descriptor ring */
+-		ring_id = xgene_enet_get_ring_id(RING_OWNER_CPU, cpu_bufnum++);
+-		cp_ring = xgene_enet_create_desc_ring(ndev, ring_num++,
++	for (i = 0; i < pdata->txq_cnt; i++) {
++		/* allocate tx descriptor ring */
++		owner = xgene_derive_ring_owner(pdata);
++		ring_id = xgene_enet_get_ring_id(owner, eth_bufnum++);
++		tx_ring = xgene_enet_create_desc_ring(ndev, ring_num++,
+ 						      RING_CFGSIZE_16KB,
+ 						      ring_id);
+-		if (!cp_ring) {
++		if (!tx_ring) {
+ 			ret = -ENOMEM;
+ 			goto err;
+ 		}
+-		cp_ring->irq = pdata->txc_irq;
+-		snprintf(cp_ring->irq_name, IRQ_ID_SIZE, "%s-txc", ndev->name);
+-	}
+ 
+-	cp_ring->cp_skb = devm_kcalloc(dev, tx_ring->slots,
+-				       sizeof(struct sk_buff *), GFP_KERNEL);
+-	if (!cp_ring->cp_skb) {
+-		ret = -ENOMEM;
+-		goto err;
+-	}
++		size = (tx_ring->slots / 2) * sizeof(__le64) * MAX_EXP_BUFFS;
++		tx_ring->exp_bufs = dma_zalloc_coherent(dev, size,
++							&dma_exp_bufs,
++							GFP_KERNEL);
++		if (!tx_ring->exp_bufs) {
++			ret = -ENOMEM;
++			goto err;
++		}
+ 
+-	size = sizeof(dma_addr_t) * MAX_SKB_FRAGS;
+-	cp_ring->frag_dma_addr = devm_kcalloc(dev, tx_ring->slots,
+-					      size, GFP_KERNEL);
+-	if (!cp_ring->frag_dma_addr) {
+-		devm_kfree(dev, cp_ring->cp_skb);
+-		ret = -ENOMEM;
+-		goto err;
+-	}
++		pdata->tx_ring[i] = tx_ring;
+ 
+-	pdata->tx_ring->cp_ring = cp_ring;
+-	pdata->tx_ring->dst_ring_num = xgene_enet_dst_ring_num(cp_ring);
++		if (!pdata->cq_cnt) {
++			cp_ring = pdata->rx_ring[i];
++		} else {
++			/* allocate tx completion descriptor ring */
++			ring_id = xgene_enet_get_ring_id(RING_OWNER_CPU,
++							 cpu_bufnum++);
++			cp_ring = xgene_enet_create_desc_ring(ndev, ring_num++,
++							      RING_CFGSIZE_16KB,
++							      ring_id);
++			if (!cp_ring) {
++				ret = -ENOMEM;
++				goto err;
++			}
+ 
+-	pdata->tx_qcnt_hi = pdata->tx_ring->slots - 128;
++			cp_ring->irq = pdata->irqs[pdata->rxq_cnt + i];
++			cp_ring->index = i;
++			snprintf(cp_ring->irq_name, IRQ_ID_SIZE, "%s-txc%d",
++				 ndev->name, i);
++		}
++
++		cp_ring->cp_skb = devm_kcalloc(dev, tx_ring->slots,
++					       sizeof(struct sk_buff *),
++					       GFP_KERNEL);
++		if (!cp_ring->cp_skb) {
++			ret = -ENOMEM;
++			goto err;
++		}
++
++		size = sizeof(dma_addr_t) * MAX_SKB_FRAGS;
++		cp_ring->frag_dma_addr = devm_kcalloc(dev, tx_ring->slots,
++						      size, GFP_KERNEL);
++		if (!cp_ring->frag_dma_addr) {
++			devm_kfree(dev, cp_ring->cp_skb);
++			ret = -ENOMEM;
++			goto err;
++		}
++
++		tx_ring->cp_ring = cp_ring;
++		tx_ring->dst_ring_num = xgene_enet_dst_ring_num(cp_ring);
++	}
++
++	pdata->ring_ops->coalesce(pdata->tx_ring[0]);
++	pdata->tx_qcnt_hi = pdata->tx_ring[0]->slots - 128;
+ 
+ 	return 0;
+ 
+@@ -1188,6 +1247,32 @@ static int xgene_get_phy_mode(struct device *dev)
+ 	return -ENODEV;
+ }
+ 
++static int xgene_enet_get_irqs(struct xgene_enet_pdata *pdata)
++{
++	struct platform_device *pdev = pdata->pdev;
++	struct device *dev = &pdev->dev;
++	int i, ret, max_irqs;
++
++	if (pdata->phy_mode == PHY_INTERFACE_MODE_RGMII)
++		max_irqs = 1;
++	else if (pdata->phy_mode == PHY_INTERFACE_MODE_SGMII)
++		max_irqs = 2;
++	else
++		max_irqs = XGENE_MAX_ENET_IRQ;
++
++	for (i = 0; i < max_irqs; i++) {
++		ret = platform_get_irq(pdev, i);
++		if (ret <= 0) {
++			dev_err(dev, "Unable to get ENET IRQ\n");
++			ret = ret ? : -ENXIO;
++			return ret;
++		}
++		pdata->irqs[i] = ret;
++	}
++
++	return 0;
++}
++
+ static int xgene_enet_get_resources(struct xgene_enet_pdata *pdata)
+ {
+ 	struct platform_device *pdev;
+@@ -1271,25 +1356,9 @@ static int xgene_enet_get_resources(struct xgene_enet_pdata *pdata)
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = platform_get_irq(pdev, 0);
+-	if (ret <= 0) {
+-		dev_err(dev, "Unable to get ENET Rx IRQ\n");
+-		ret = ret ? : -ENXIO;
++	ret = xgene_enet_get_irqs(pdata);
++	if (ret)
+ 		return ret;
+-	}
+-	pdata->rx_irq = ret;
+-
+-	if (pdata->phy_mode != PHY_INTERFACE_MODE_RGMII) {
+-		ret = platform_get_irq(pdev, 1);
+-		if (ret <= 0) {
+-			pdata->cq_cnt = 0;
+-			dev_info(dev, "Unable to get Tx completion IRQ,"
+-				 "using Rx IRQ instead\n");
+-		} else {
+-			pdata->cq_cnt = XGENE_MAX_TXC_RINGS;
+-			pdata->txc_irq = ret;
+-		}
+-	}
+ 
+ 	pdata->clk = devm_clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(pdata->clk)) {
+@@ -1328,7 +1397,7 @@ static int xgene_enet_init_hw(struct xgene_enet_pdata *pdata)
+ 	struct xgene_enet_desc_ring *buf_pool;
+ 	struct xgene_enet_cle *enet_cle = &pdata->cle;
+ 	u16 dst_ring_num;
+-	int ret;
++	int i, ret;
+ 
+ 	ret = pdata->port_ops->reset(pdata);
+ 	if (ret)
+@@ -1341,15 +1410,18 @@ static int xgene_enet_init_hw(struct xgene_enet_pdata *pdata)
+ 	}
+ 
+ 	/* setup buffer pool */
+-	buf_pool = pdata->rx_ring->buf_pool;
+-	xgene_enet_init_bufpool(buf_pool);
+-	ret = xgene_enet_refill_bufpool(buf_pool, pdata->rx_buff_cnt);
+-	if (ret) {
+-		xgene_enet_delete_desc_rings(pdata);
+-		return ret;
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		buf_pool = pdata->rx_ring[i]->buf_pool;
++		xgene_enet_init_bufpool(buf_pool);
++		ret = xgene_enet_refill_bufpool(buf_pool, pdata->rx_buff_cnt);
++		if (ret) {
++			xgene_enet_delete_desc_rings(pdata);
++			return ret;
++		}
+ 	}
+ 
+-	dst_ring_num = xgene_enet_dst_ring_num(pdata->rx_ring);
++	dst_ring_num = xgene_enet_dst_ring_num(pdata->rx_ring[0]);
++	buf_pool = pdata->rx_ring[0]->buf_pool;
+ 	if (pdata->phy_mode == PHY_INTERFACE_MODE_XGMII) {
+ 		/* Initialize and Enable  PreClassifier Tree */
+ 		enet_cle->max_nodes = 512;
+@@ -1380,17 +1452,26 @@ static void xgene_enet_setup_ops(struct xgene_enet_pdata *pdata)
+ 		pdata->mac_ops = &xgene_gmac_ops;
+ 		pdata->port_ops = &xgene_gport_ops;
+ 		pdata->rm = RM3;
++		pdata->rxq_cnt = 1;
++		pdata->txq_cnt = 1;
++		pdata->cq_cnt = 0;
+ 		break;
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 		pdata->mac_ops = &xgene_sgmac_ops;
+ 		pdata->port_ops = &xgene_sgport_ops;
+ 		pdata->rm = RM1;
++		pdata->rxq_cnt = 1;
++		pdata->txq_cnt = 1;
++		pdata->cq_cnt = 1;
+ 		break;
+ 	default:
+ 		pdata->mac_ops = &xgene_xgmac_ops;
+ 		pdata->port_ops = &xgene_xgport_ops;
+ 		pdata->cle_ops = &xgene_cle3in_ops;
+ 		pdata->rm = RM0;
++		pdata->rxq_cnt = XGENE_NUM_RX_RING;
++		pdata->txq_cnt = XGENE_NUM_TX_RING;
++		pdata->cq_cnt = XGENE_NUM_TXC_RING;
+ 		break;
+ 	}
+ 
+@@ -1444,12 +1525,16 @@ static void xgene_enet_setup_ops(struct xgene_enet_pdata *pdata)
+ static void xgene_enet_napi_add(struct xgene_enet_pdata *pdata)
+ {
+ 	struct napi_struct *napi;
++	int i;
+ 
+-	napi = &pdata->rx_ring->napi;
+-	netif_napi_add(pdata->ndev, napi, xgene_enet_napi, NAPI_POLL_WEIGHT);
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		napi = &pdata->rx_ring[i]->napi;
++		netif_napi_add(pdata->ndev, napi, xgene_enet_napi,
++			       NAPI_POLL_WEIGHT);
++	}
+ 
+-	if (pdata->cq_cnt) {
+-		napi = &pdata->tx_ring->cp_ring->napi;
++	for (i = 0; i < pdata->cq_cnt; i++) {
++		napi = &pdata->tx_ring[i]->cp_ring->napi;
+ 		netif_napi_add(pdata->ndev, napi, xgene_enet_napi,
+ 			       NAPI_POLL_WEIGHT);
+ 	}
+@@ -1458,12 +1543,15 @@ static void xgene_enet_napi_add(struct xgene_enet_pdata *pdata)
+ static void xgene_enet_napi_del(struct xgene_enet_pdata *pdata)
+ {
+ 	struct napi_struct *napi;
++	int i;
+ 
+-	napi = &pdata->rx_ring->napi;
+-	netif_napi_del(napi);
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		napi = &pdata->rx_ring[i]->napi;
++		netif_napi_del(napi);
++	}
+ 
+-	if (pdata->cq_cnt) {
+-		napi = &pdata->tx_ring->cp_ring->napi;
++	for (i = 0; i < pdata->cq_cnt; i++) {
++		napi = &pdata->tx_ring[i]->cp_ring->napi;
+ 		netif_napi_del(napi);
+ 	}
+ }
+@@ -1477,7 +1565,8 @@ static int xgene_enet_probe(struct platform_device *pdev)
+ 	const struct of_device_id *of_id;
+ 	int ret;
+ 
+-	ndev = alloc_etherdev(sizeof(struct xgene_enet_pdata));
++	ndev = alloc_etherdev_mqs(sizeof(struct xgene_enet_pdata),
++				  XGENE_NUM_RX_RING, XGENE_NUM_TX_RING);
+ 	if (!ndev)
+ 		return -ENOMEM;
+ 
+@@ -1562,6 +1651,7 @@ static int xgene_enet_remove(struct platform_device *pdev)
+ 	struct xgene_mac_ops *mac_ops;
+ 	struct net_device *ndev;
+ 	struct xgene_enet_desc_ring *buf_pool;
++	int i;
+ 
+ 	pdata = platform_get_drvdata(pdev);
+ 	mac_ops = pdata->mac_ops;
+@@ -1580,8 +1670,10 @@ static int xgene_enet_remove(struct platform_device *pdev)
+ 		xgene_enet_mdio_remove(pdata);
+ 
+ 	/* Free up the buffers held by hardware */
+-	buf_pool = pdata->rx_ring->buf_pool;
+-	xgene_enet_delete_bufpool(buf_pool);
++	for (i = 0; i < pdata->rxq_cnt; i++) {
++		buf_pool = pdata->rx_ring[i]->buf_pool;
++		xgene_enet_delete_bufpool(buf_pool);
++	}
+ 	unregister_netdev(ndev);
+ 	pdata->port_ops->shutdown(pdata);
+ 	free_netdev(ndev);
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_main.h b/drivers/net/ethernet/apm/xgene/xgene_enet_main.h
+index a4d9298..ebdfddd 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_main.h
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_main.h
+@@ -49,6 +49,11 @@
+ #define XGENE_ENET_MSS	1448
+ #define XGENE_MIN_ENET_FRAME_SIZE	60
+ 
++#define XGENE_MAX_ENET_IRQ	8
++#define XGENE_NUM_RX_RING	4
++#define XGENE_NUM_TX_RING	4
++#define XGENE_NUM_TXC_RING	4
++
+ #define START_CPU_BUFNUM_0	0
+ #define START_ETH_BUFNUM_0	2
+ #define START_BP_BUFNUM_0	0x22
+@@ -73,7 +78,6 @@
+ #define X2_START_RING_NUM_1	256
+ 
+ #define IRQ_ID_SIZE		16
+-#define XGENE_MAX_TXC_RINGS	1
+ 
+ #define PHY_POLL_LINK_ON	(10 * HZ)
+ #define PHY_POLL_LINK_OFF	(PHY_POLL_LINK_ON / 5)
+@@ -103,6 +107,7 @@ struct xgene_enet_desc_ring {
+ 	void *irq_mbox_addr;
+ 	u16 dst_ring_num;
+ 	u8 nbufpool;
++	u8 index;
+ 	struct sk_buff *(*rx_skb);
+ 	struct sk_buff *(*cp_skb);
+ 	dma_addr_t *frag_dma_addr;
+@@ -144,6 +149,7 @@ struct xgene_ring_ops {
+ 	void (*clear)(struct xgene_enet_desc_ring *);
+ 	void (*wr_cmd)(struct xgene_enet_desc_ring *, int);
+ 	u32 (*len)(struct xgene_enet_desc_ring *);
++	void (*coalesce)(struct xgene_enet_desc_ring *);
+ };
+ 
+ struct xgene_cle_ops {
+@@ -159,15 +165,16 @@ struct xgene_enet_pdata {
+ 	struct clk *clk;
+ 	struct platform_device *pdev;
+ 	enum xgene_enet_id enet_id;
+-	struct xgene_enet_desc_ring *tx_ring;
+-	struct xgene_enet_desc_ring *rx_ring;
+-	u16 tx_level;
+-	u16 txc_level;
++	struct xgene_enet_desc_ring *tx_ring[XGENE_NUM_TX_RING];
++	struct xgene_enet_desc_ring *rx_ring[XGENE_NUM_RX_RING];
++	u16 tx_level[XGENE_NUM_TX_RING];
++	u16 txc_level[XGENE_NUM_TX_RING];
+ 	char *dev_name;
+ 	u32 rx_buff_cnt;
+ 	u32 tx_qcnt_hi;
+-	u32 rx_irq;
+-	u32 txc_irq;
++	u32 irqs[XGENE_MAX_ENET_IRQ];
++	u8 rxq_cnt;
++	u8 txq_cnt;
+ 	u8 cq_cnt;
+ 	void __iomem *eth_csr_addr;
+ 	void __iomem *eth_ring_if_addr;
+diff --git a/drivers/net/ethernet/apm/xgene/xgene_enet_ring2.c b/drivers/net/ethernet/apm/xgene/xgene_enet_ring2.c
+index 0b6896b..2b76732 100644
+--- a/drivers/net/ethernet/apm/xgene/xgene_enet_ring2.c
++++ b/drivers/net/ethernet/apm/xgene/xgene_enet_ring2.c
+@@ -190,6 +190,17 @@ static u32 xgene_enet_ring_len(struct xgene_enet_desc_ring *ring)
+ 	return num_msgs;
+ }
+ 
++static void xgene_enet_setup_coalescing(struct xgene_enet_desc_ring *ring)
++{
++	u32 data = 0x7777;
++
++	xgene_enet_ring_wr32(ring, CSR_PBM_COAL, 0x8e);
++	xgene_enet_ring_wr32(ring, CSR_PBM_CTICK1, data);
++	xgene_enet_ring_wr32(ring, CSR_PBM_CTICK2, data << 16);
++	xgene_enet_ring_wr32(ring, CSR_THRESHOLD0_SET1, 0x40);
++	xgene_enet_ring_wr32(ring, CSR_THRESHOLD1_SET1, 0x80);
++}
++
+ struct xgene_ring_ops xgene_ring2_ops = {
+ 	.num_ring_config = X2_NUM_RING_CONFIG,
+ 	.num_ring_id_shift = 13,
+@@ -197,4 +208,5 @@ struct xgene_ring_ops xgene_ring2_ops = {
+ 	.clear = xgene_enet_clear_ring,
+ 	.wr_cmd = xgene_enet_wr_cmd,
+ 	.len = xgene_enet_ring_len,
++	.coalesce = xgene_enet_setup_coalescing,
+ };
+-- 
+2.6.0
+
