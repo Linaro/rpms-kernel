@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
-%define centupdate 0.26.el7
+%define centupdate 0.27.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
@@ -1458,8 +1458,10 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Tue Mar 22 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.27.el7]
+- Initial NXP support
 
-* Thu Feb 25 2016 Jim Perrin <jperrin@centos.org [4.2.0-0.26.el7]
+* Thu Feb 25 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.26.el7]
 - Add patches 1008-1012 for APM
 
 * Wed Jan 20 2016 Jim Perrin <jperrin@centos.org [4.2.0-0.25.el7]
