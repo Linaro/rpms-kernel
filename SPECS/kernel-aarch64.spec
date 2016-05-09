@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
-%define centupdate 0.27.el7
+%define centupdate 0.28.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
@@ -343,6 +343,16 @@ Patch2000: KEYS-Fix-keyring-ref-leak-in-join_session_keyring.patch
 
 # NXP Patches
 Patch3001: NXP-Layerscape-support.patch
+
+# QDF2432 Patches
+Patch4001: 4001-tty-amba-pl011-add-register-accessor-functions.patch
+Patch4002: 4002-tty-amba-pl011-convert-accessor-functions-to-take-ua.patch
+Patch4003: 4003-tty-amba-pl011-add-support-for-32-bit-register-acces.patch
+Patch4004: 4004-tty-amba-pl011-use-iotype-instead-of-access_32b-to-t.patch
+Patch4005: 4005-tty-amba-pl011-Use-32-bit-accesses-for-SBSA-UART.patch
+Patch4006: 4006-irqchip-Fully-support-ACPI-GICv3-ITS.patch
+Patch4007: 4007-acpi-add-support-for-extended-IRQ-to-PCI-link.patch
+Patch4008: 4008-irqchip-gic-v3-ACPI-Add-redistributor-support-via-GI.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -692,6 +702,16 @@ git am %{PATCH2000}
 
 # Apply NXP patches
 git am %{PATCH3001}
+
+# Apply QDF2432 patches
+git am %{PATCH4001}
+git am %{PATCH4002}
+git am %{PATCH4003}
+git am %{PATCH4004}
+git am %{PATCH4005}
+git am %{PATCH4006}
+git am %{PATCH4007}
+git am %{PATCH4008}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1458,6 +1478,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon May 09 2016 Christopher Covington <cov@codeaurora.org> [4.2.0-0.28.el7]
+- Initial QDF2432 support
+
 * Tue Mar 22 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.27.el7]
 - Initial NXP support
 

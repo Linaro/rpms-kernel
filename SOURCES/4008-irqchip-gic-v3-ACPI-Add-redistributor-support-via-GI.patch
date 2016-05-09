@@ -1,0 +1,68 @@
+From: Tomasz Nowicki <tn@semihalf.com>
+Date: Tue, 19 Jan 2016 14:11:16 +0100
+Subject: irqchip/gic-v3: ACPI: Add redistributor support via GICC structures
+
+Following ACPI spec:
+On systems supporting GICv3 and above, GICR Base Address in MADT GICC
+structure holds the 64-bit physical address of the associated Redistributor.
+If all of the GIC Redistributors are in the always-on power domain,
+GICR structures should be used to describe the Redistributors instead,
+and this field must be set to 0.
+
+It means that we have two ways to initialize registirbutors map.
+1. via GICD structure which can accommodate many redistributors as a region
+2. via GICC which is able to describe single redistributor
+
+This patch is going to add support for second option.
+Considering redistributors, GICD and GICC subtables have be mutually
+exclusive. While discovering and mapping redistributor, we need to know
+its size in advance. For the GICC case, redistributor can be in
+a power-domain that is off, thus we cannot relay on GICR TYPER register.
+Therefore, we get GIC version from distributor register and map 2xSZ_64K
+for GICv3. [While the upstream version of this patch includes support for
+GICv4, this backport omits it for simplicity.]
+
+Acked-by: Marc Zyngier <marc.zyngier@arm.com>
+Signed-off-by: Hanjun Guo <hanjun.guo@linaro.org>
+Signed-off-by: Tomasz Nowicki <tn@semihalf.com>
+Signed-off-by: Marc Zyngier <marc.zyngier@arm.com>
+
+Git-commit: b70fb7af67158250bf16db467926e6e105d8bc49
+Git-repo: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+[cov@codeaurora.org: Backport GICv3 essentials to CentOS 7.2]
+Signed-off-by: Christopher Covington <cov@codeaurora.org>
+---
+ drivers/irqchip/irq-gic-v3.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/irqchip/irq-gic-v3.c b/drivers/irqchip/irq-gic-v3.c
+index f729b97..cf75d81 100644
+--- a/drivers/irqchip/irq-gic-v3.c
++++ b/drivers/irqchip/irq-gic-v3.c
+@@ -49,6 +49,7 @@ struct gic_chip_data {
+ 	u64			redist_stride;
+ 	u32			nr_redist_regions;
+ 	unsigned int		irq_nr;
++	bool			single_redist;
+ };
+ 
+ static struct gic_chip_data gic_data __read_mostly;
+@@ -453,6 +454,9 @@ static int gic_populate_rdist(void)
+ 				return 0;
+ 			}
+ 
++			if (gic_data.single_redist)
++				break;
++
+ 			if (gic_data.redist_stride) {
+ 				ptr += gic_data.redist_stride;
+ 			} else {
+@@ -1092,7 +1096,7 @@ gic_v3_acpi_init(struct acpi_table_header *table, struct irq_domain **domain)
+ 			gic_acpi_parse_madt_redist, table,
+ 			ACPI_MADT_TYPE_GENERIC_REDISTRIBUTOR, 0);
+ 	if (!count)
+-		pr_info("No valid GICR entries exist\n");
++		gic_data.single_redist = true;
+ 	else if (count < 0) {
+ 		pr_err("Error during GICR entries parsing\n");
+ 		err = -EINVAL;
