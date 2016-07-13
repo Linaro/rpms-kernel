@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
-%define centupdate 0.28.el7
+%define centupdate 0.29.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
@@ -343,6 +343,7 @@ Patch2000: KEYS-Fix-keyring-ref-leak-in-join_session_keyring.patch
 
 # NXP Patches
 Patch3001: NXP-Layerscape-support.patch
+Patch3002: 3002-NXP-phy-ifc-spi-kvm.patch
 
 # QDF2432 Patches
 Patch4001: 4001-tty-amba-pl011-add-register-accessor-functions.patch
@@ -702,6 +703,7 @@ git am %{PATCH2000}
 
 # Apply NXP patches
 git am %{PATCH3001}
+git am %{PATCH3002}
 
 # Apply QDF2432 patches
 git am %{PATCH4001}
@@ -1478,6 +1480,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Wed Jun 29 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.29.el7]
+- Additional patches and upstream backports for NXP support
+
 * Mon May 09 2016 Christopher Covington <cov@codeaurora.org> [4.2.0-0.28.el7]
 - Initial QDF2432 support
 
