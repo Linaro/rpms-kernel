@@ -1,0 +1,2740 @@
+From 5cd9b2dad7f422fac7b0942b747797e4d34b9c67 Mon Sep 17 00:00:00 2001
+From: Shaohui Xie <Shaohui.Xie@freescale.com>
+Date: Fri, 31 Jul 2015 16:58:42 +0800
+Subject: [PATCH 01/26] net: phy: add driver for aquantia phy
+
+This patch added driver to support Aquantia PHYs AQ1202, AQ2104, AQR105,
+AQR405, which accessed through clause 45.
+
+Signed-off-by: Shaohui Xie <Shaohui.Xie@freescale.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+(cherry picked from commit bee8259dd31f419a883174556b11edc6f9a153d1)
+---
+ drivers/net/phy/Kconfig    |   5 ++
+ drivers/net/phy/Makefile   |   1 +
+ drivers/net/phy/aquantia.c | 152 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 158 insertions(+)
+ create mode 100644 drivers/net/phy/aquantia.c
+
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index cb86d7a..87422d1 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -14,6 +14,11 @@ if PHYLIB
+ 
+ comment "MII PHY device drivers"
+ 
++config AQUANTIA_PHY
++        tristate "Drivers for the Aquantia PHYs"
++        ---help---
++          Currently supports the Aquantia AQ1202, AQ2104, AQR105, AQR405
++
+ config AT803X_PHY
+ 	tristate "Drivers for Atheros AT803X PHYs"
+ 	---help---
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index fcc25a0..19effe1 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -3,6 +3,7 @@
+ libphy-objs			:= phy.o phy_device.o mdio_bus.o
+ 
+ obj-$(CONFIG_PHYLIB)		+= libphy.o
++obj-$(CONFIG_AQUANTIA_PHY)	+= aquantia.o
+ obj-$(CONFIG_MARVELL_PHY)	+= marvell.o
+ obj-$(CONFIG_DAVICOM_PHY)	+= davicom.o
+ obj-$(CONFIG_CICADA_PHY)	+= cicada.o
+diff --git a/drivers/net/phy/aquantia.c b/drivers/net/phy/aquantia.c
+new file mode 100644
+index 0000000..73d347d
+--- /dev/null
++++ b/drivers/net/phy/aquantia.c
+@@ -0,0 +1,152 @@
++/*
++ * Driver for Aquantia PHY
++ *
++ * Author: Shaohui Xie <Shaohui.Xie@freescale.com>
++ *
++ * Copyright 2015 Freescale Semiconductor, Inc.
++ *
++ * This file is licensed under the terms of the GNU General Public License
++ * version 2.  This program is licensed "as is" without any warranty of any
++ * kind, whether express or implied.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/delay.h>
++#include <linux/mii.h>
++#include <linux/ethtool.h>
++#include <linux/phy.h>
++#include <linux/mdio.h>
++
++#define PHY_ID_AQ1202	0x03a1b445
++#define PHY_ID_AQ2104	0x03a1b460
++#define PHY_ID_AQR105	0x03a1b4a2
++#define PHY_ID_AQR405	0x03a1b4b0
++
++#define PHY_AQUANTIA_FEATURES	(SUPPORTED_10000baseT_Full | \
++				 SUPPORTED_1000baseT_Full | \
++				 SUPPORTED_100baseT_Full | \
++				 PHY_DEFAULT_FEATURES)
++
++static int aquantia_config_aneg(struct phy_device *phydev)
++{
++	phydev->supported = PHY_AQUANTIA_FEATURES;
++	phydev->advertising = phydev->supported;
++
++	return 0;
++}
++
++static int aquantia_aneg_done(struct phy_device *phydev)
++{
++	int reg;
++
++	reg = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
++	return (reg < 0) ? reg : (reg & BMSR_ANEGCOMPLETE);
++}
++
++static int aquantia_read_status(struct phy_device *phydev)
++{
++	int reg;
++
++	reg = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
++	reg = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
++	if (reg & MDIO_STAT1_LSTATUS)
++		phydev->link = 1;
++	else
++		phydev->link = 0;
++
++	reg = phy_read_mmd(phydev, MDIO_MMD_AN, 0xc800);
++	mdelay(10);
++	reg = phy_read_mmd(phydev, MDIO_MMD_AN, 0xc800);
++
++	switch (reg) {
++	case 0x9:
++		phydev->speed = SPEED_2500;
++		break;
++	case 0x5:
++		phydev->speed = SPEED_1000;
++		break;
++	case 0x3:
++		phydev->speed = SPEED_100;
++		break;
++	case 0x7:
++	default:
++		phydev->speed = SPEED_10000;
++		break;
++	}
++	phydev->duplex = DUPLEX_FULL;
++
++	return 0;
++}
++
++static struct phy_driver aquantia_driver[] = {
++{
++	.phy_id		= PHY_ID_AQ1202,
++	.phy_id_mask	= 0xfffffff0,
++	.name		= "Aquantia AQ1202",
++	.features	= PHY_AQUANTIA_FEATURES,
++	.aneg_done	= aquantia_aneg_done,
++	.config_aneg    = aquantia_config_aneg,
++	.read_status	= aquantia_read_status,
++	.driver		= { .owner = THIS_MODULE,},
++},
++{
++	.phy_id		= PHY_ID_AQ2104,
++	.phy_id_mask	= 0xfffffff0,
++	.name		= "Aquantia AQ2104",
++	.features	= PHY_AQUANTIA_FEATURES,
++	.aneg_done	= aquantia_aneg_done,
++	.config_aneg    = aquantia_config_aneg,
++	.read_status	= aquantia_read_status,
++	.driver		= { .owner = THIS_MODULE,},
++},
++{
++	.phy_id		= PHY_ID_AQR105,
++	.phy_id_mask	= 0xfffffff0,
++	.name		= "Aquantia AQR105",
++	.features	= PHY_AQUANTIA_FEATURES,
++	.aneg_done	= aquantia_aneg_done,
++	.config_aneg    = aquantia_config_aneg,
++	.read_status	= aquantia_read_status,
++	.driver		= { .owner = THIS_MODULE,},
++},
++{
++	.phy_id		= PHY_ID_AQR405,
++	.phy_id_mask	= 0xfffffff0,
++	.name		= "Aquantia AQR405",
++	.features	= PHY_AQUANTIA_FEATURES,
++	.aneg_done	= aquantia_aneg_done,
++	.config_aneg    = aquantia_config_aneg,
++	.read_status	= aquantia_read_status,
++	.driver		= { .owner = THIS_MODULE,},
++},
++};
++
++static int __init aquantia_init(void)
++{
++	return phy_drivers_register(aquantia_driver,
++				    ARRAY_SIZE(aquantia_driver));
++}
++
++static void __exit aquantia_exit(void)
++{
++	return phy_drivers_unregister(aquantia_driver,
++				      ARRAY_SIZE(aquantia_driver));
++}
++
++module_init(aquantia_init);
++module_exit(aquantia_exit);
++
++static struct mdio_device_id __maybe_unused aquantia_tbl[] = {
++	{ PHY_ID_AQ1202, 0xfffffff0 },
++	{ PHY_ID_AQ2104, 0xfffffff0 },
++	{ PHY_ID_AQR105, 0xfffffff0 },
++	{ PHY_ID_AQR405, 0xfffffff0 },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(mdio, aquantia_tbl);
++
++MODULE_DESCRIPTION("Aquantia PHY driver");
++MODULE_AUTHOR("Shaohui Xie <Shaohui.Xie@freescale.com>");
++MODULE_LICENSE("GPL v2");
+-- 
+1.9.0
+
+
+From 9c9733bf536e44c54e1d47ad00518fc23bbad02e Mon Sep 17 00:00:00 2001
+From: Shaohui Xie <Shaohui.Xie@freescale.com>
+Date: Fri, 21 Aug 2015 15:29:29 +0800
+Subject: [PATCH 02/26] net: phy: add interrupt support for aquantia phy
+
+By implementing config_intr & ack_interrupt, now the phy can support
+link connect/disconnect interrupt.
+
+Signed-off-by: Shaohui Xie <Shaohui.Xie@freescale.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+(cherry picked from commit 54cf7be992fe86571a3f07b96446cd5334b014ab)
+---
+ drivers/net/phy/aquantia.c | 49 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/drivers/net/phy/aquantia.c b/drivers/net/phy/aquantia.c
+index 73d347d..d6111af 100644
+--- a/drivers/net/phy/aquantia.c
++++ b/drivers/net/phy/aquantia.c
+@@ -44,6 +44,43 @@ static int aquantia_aneg_done(struct phy_device *phydev)
+ 	return (reg < 0) ? reg : (reg & BMSR_ANEGCOMPLETE);
+ }
+ 
++static int aquantia_config_intr(struct phy_device *phydev)
++{
++	int err;
++
++	if (phydev->interrupts == PHY_INTERRUPT_ENABLED) {
++		err = phy_write_mmd(phydev, MDIO_MMD_AN, 0xd401, 1);
++		if (err < 0)
++			return err;
++
++		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff00, 1);
++		if (err < 0)
++			return err;
++
++		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff01, 0x1001);
++	} else {
++		err = phy_write_mmd(phydev, MDIO_MMD_AN, 0xd401, 0);
++		if (err < 0)
++			return err;
++
++		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff00, 0);
++		if (err < 0)
++			return err;
++
++		err = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xff01, 0);
++	}
++
++	return err;
++}
++
++static int aquantia_ack_interrupt(struct phy_device *phydev)
++{
++	int reg;
++
++	reg = phy_read_mmd(phydev, MDIO_MMD_AN, 0xcc01);
++	return (reg < 0) ? reg : 0;
++}
++
+ static int aquantia_read_status(struct phy_device *phydev)
+ {
+ 	int reg;
+@@ -85,8 +122,11 @@ static struct phy_driver aquantia_driver[] = {
+ 	.phy_id_mask	= 0xfffffff0,
+ 	.name		= "Aquantia AQ1202",
+ 	.features	= PHY_AQUANTIA_FEATURES,
++	.flags		= PHY_HAS_INTERRUPT,
+ 	.aneg_done	= aquantia_aneg_done,
+ 	.config_aneg    = aquantia_config_aneg,
++	.config_intr	= aquantia_config_intr,
++	.ack_interrupt	= aquantia_ack_interrupt,
+ 	.read_status	= aquantia_read_status,
+ 	.driver		= { .owner = THIS_MODULE,},
+ },
+@@ -95,8 +135,11 @@ static struct phy_driver aquantia_driver[] = {
+ 	.phy_id_mask	= 0xfffffff0,
+ 	.name		= "Aquantia AQ2104",
+ 	.features	= PHY_AQUANTIA_FEATURES,
++	.flags		= PHY_HAS_INTERRUPT,
+ 	.aneg_done	= aquantia_aneg_done,
+ 	.config_aneg    = aquantia_config_aneg,
++	.config_intr	= aquantia_config_intr,
++	.ack_interrupt	= aquantia_ack_interrupt,
+ 	.read_status	= aquantia_read_status,
+ 	.driver		= { .owner = THIS_MODULE,},
+ },
+@@ -105,8 +148,11 @@ static struct phy_driver aquantia_driver[] = {
+ 	.phy_id_mask	= 0xfffffff0,
+ 	.name		= "Aquantia AQR105",
+ 	.features	= PHY_AQUANTIA_FEATURES,
++	.flags		= PHY_HAS_INTERRUPT,
+ 	.aneg_done	= aquantia_aneg_done,
+ 	.config_aneg    = aquantia_config_aneg,
++	.config_intr	= aquantia_config_intr,
++	.ack_interrupt	= aquantia_ack_interrupt,
+ 	.read_status	= aquantia_read_status,
+ 	.driver		= { .owner = THIS_MODULE,},
+ },
+@@ -115,8 +161,11 @@ static struct phy_driver aquantia_driver[] = {
+ 	.phy_id_mask	= 0xfffffff0,
+ 	.name		= "Aquantia AQR405",
+ 	.features	= PHY_AQUANTIA_FEATURES,
++	.flags		= PHY_HAS_INTERRUPT,
+ 	.aneg_done	= aquantia_aneg_done,
+ 	.config_aneg    = aquantia_config_aneg,
++	.config_intr	= aquantia_config_intr,
++	.ack_interrupt	= aquantia_ack_interrupt,
+ 	.read_status	= aquantia_read_status,
+ 	.driver		= { .owner = THIS_MODULE,},
+ },
+-- 
+1.9.0
+
+
+From 9f449d2b4a7f36e057606c6f237c9e921892261b Mon Sep 17 00:00:00 2001
+From: Lijun Pan <Lijun.Pan@freescale.com>
+Date: Wed, 23 Mar 2016 16:20:15 -0500
+Subject: [PATCH 03/26] arm64: dts: ls2080ardb: add CS4340 and AQR405 PHY
+
+Signed-off-by: Lijun Pan <Lijun.Pan@freescale.com>
+---
+ arch/arm64/boot/dts/freescale/fsl-ls2080a-rdb.dts | 44 +++++++++++++++++++++++
+ arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi    | 22 ++++++++++++
+ 2 files changed, 66 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/freescale/fsl-ls2080a-rdb.dts b/arch/arm64/boot/dts/freescale/fsl-ls2080a-rdb.dts
+index e127f0b..fb6a147 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-ls2080a-rdb.dts
++++ b/arch/arm64/boot/dts/freescale/fsl-ls2080a-rdb.dts
+@@ -164,3 +164,47 @@
+ &usb1 {
+ 	status = "okay";
+ };
++
++&emdio1 {
++	/* CS4340 PHYs */
++	mdio1_phy1: emdio1_phy@1 {
++		reg = <0x10>;
++		phy-connection-type = "xfi";
++	};
++	mdio1_phy2: emdio1_phy@2 {
++		reg = <0x11>;
++		phy-connection-type = "xfi";
++	};
++	mdio1_phy3: emdio1_phy@3 {
++		reg = <0x12>;
++		phy-connection-type = "xfi";
++	};
++	mdio1_phy4: emdio1_phy@4 {
++		reg = <0x13>;
++		phy-connection-type = "xfi";
++	};
++};
++
++&emdio2 {
++	/* AQR405 PHYs */
++	mdio2_phy1: emdio2_phy@1 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <0x0>;
++		phy-connection-type = "xfi";
++	};
++	mdio2_phy2: emdio2_phy@2 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <0x1>;
++		phy-connection-type = "xfi";
++	};
++	mdio2_phy3: emdio2_phy@3 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <0x2>;
++		phy-connection-type = "xfi";
++	};
++	mdio2_phy4: emdio2_phy@4 {
++		compatible = "ethernet-phy-ieee802.3-c45";
++		reg = <0x3>;
++		phy-connection-type = "xfi";
++	};
++};
+diff --git a/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi b/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi
+index c6979de..ba3c98a 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi
++++ b/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi
+@@ -526,5 +526,27 @@
+ 			reg = <0x0 0x04000000 0x0 0x01000000>;
+ 			interrupts = <0 12 4>;
+ 		};
++
++			/* TODO: WRIOP (CCSR?) */
++		emdio1: mdio@0x8B96000 { /* WRIOP0: 0x8B8_0000, E-MDIO1: 0x1_6000 */
++			compatible = "fsl,fman-memac-mdio";
++			reg = <0x0 0x8B96000 0x0 0x1000>;
++			device_type = "mdio";			/* TODO: is this necessary? */
++			little-endian;	/* force the driver in LE mode */
++
++			/* Not necessary on the QDS, but needed on the RDB */
++			#address-cells = <1>;
++			#size-cells = <0>;
++		};
++
++		emdio2: mdio@0x8B97000 { /* WRIOP0: 0x8B8_0000, E-MDIO2: 0x1_7000 */
++			compatible = "fsl,fman-memac-mdio";
++			reg = <0x0 0x8B97000 0x0 0x1000>;
++			device_type = "mdio";			/* TODO: is this necessary? */
++			little-endian;	/* force the driver in LE mode */
++
++			#address-cells = <1>;
++			#size-cells = <0>;
++		};
+ 	};
+ };
+-- 
+1.9.0
+
+
+From 18c849c75fac0e964c5dee2057b8048347d042dc Mon Sep 17 00:00:00 2001
+From: Yuan Yao <yao.yuan@freescale.com>
+Date: Fri, 30 Oct 2015 19:03:58 +0800
+Subject: [PATCH 04/26] dmaengine: fsl-edma: add PM suspend/resume support
+
+This add power management suspend/resume support for the fsl-edma
+driver.
+
+eDMA acted as a basic function used by others. What it needs to do
+is the two steps below to support power management.
+
+In fsl_edma_suspend_late:
+Check whether the DMA chan is idle, if it is not idle disable DMA
+request.
+
+In fsl_edma_resume_early:
+Enable the eDMA and wait for being used.
+
+Signed-off-by: Yuan Yao <yao.yuan@freescale.com>
+Signed-off-by: Vinod Koul <vinod.koul@intel.com>
+(cherry picked from commit 82d149b86d31e11fbbbc1b850bebffe1bfa2e82d)
+---
+ drivers/dma/fsl-edma.c | 85 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 82 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/dma/fsl-edma.c b/drivers/dma/fsl-edma.c
+index 915eec3..be2e62b 100644
+--- a/drivers/dma/fsl-edma.c
++++ b/drivers/dma/fsl-edma.c
+@@ -116,6 +116,10 @@
+ 				BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) | \
+ 				BIT(DMA_SLAVE_BUSWIDTH_4_BYTES) | \
+ 				BIT(DMA_SLAVE_BUSWIDTH_8_BYTES)
++enum fsl_edma_pm_state {
++	RUNNING = 0,
++	SUSPENDED,
++};
+ 
+ struct fsl_edma_hw_tcd {
+ 	__le32	saddr;
+@@ -147,6 +151,9 @@ struct fsl_edma_slave_config {
+ struct fsl_edma_chan {
+ 	struct virt_dma_chan		vchan;
+ 	enum dma_status			status;
++	enum fsl_edma_pm_state		pm_state;
++	bool				idle;
++	u32				slave_id;
+ 	struct fsl_edma_engine		*edma;
+ 	struct fsl_edma_desc		*edesc;
+ 	struct fsl_edma_slave_config	fsc;
+@@ -298,6 +305,7 @@ static int fsl_edma_terminate_all(struct dma_chan *chan)
+ 	spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
+ 	fsl_edma_disable_request(fsl_chan);
+ 	fsl_chan->edesc = NULL;
++	fsl_chan->idle = true;
+ 	vchan_get_all_descriptors(&fsl_chan->vchan, &head);
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	vchan_dma_desc_free_list(&fsl_chan->vchan, &head);
+@@ -313,6 +321,7 @@ static int fsl_edma_pause(struct dma_chan *chan)
+ 	if (fsl_chan->edesc) {
+ 		fsl_edma_disable_request(fsl_chan);
+ 		fsl_chan->status = DMA_PAUSED;
++		fsl_chan->idle = true;
+ 	}
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	return 0;
+@@ -327,6 +336,7 @@ static int fsl_edma_resume(struct dma_chan *chan)
+ 	if (fsl_chan->edesc) {
+ 		fsl_edma_enable_request(fsl_chan);
+ 		fsl_chan->status = DMA_IN_PROGRESS;
++		fsl_chan->idle = false;
+ 	}
+ 	spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
+ 	return 0;
+@@ -648,6 +658,7 @@ static void fsl_edma_xfer_desc(struct fsl_edma_chan *fsl_chan)
+ 	fsl_edma_set_tcd_regs(fsl_chan, fsl_chan->edesc->tcd[0].vtcd);
+ 	fsl_edma_enable_request(fsl_chan);
+ 	fsl_chan->status = DMA_IN_PROGRESS;
++	fsl_chan->idle = false;
+ }
+ 
+ static irqreturn_t fsl_edma_tx_handler(int irq, void *dev_id)
+@@ -676,6 +687,7 @@ static irqreturn_t fsl_edma_tx_handler(int irq, void *dev_id)
+ 				vchan_cookie_complete(&fsl_chan->edesc->vdesc);
+ 				fsl_chan->edesc = NULL;
+ 				fsl_chan->status = DMA_COMPLETE;
++				fsl_chan->idle = true;
+ 			} else {
+ 				vchan_cyclic_callback(&fsl_chan->edesc->vdesc);
+ 			}
+@@ -704,6 +716,7 @@ static irqreturn_t fsl_edma_err_handler(int irq, void *dev_id)
+ 			edma_writeb(fsl_edma, EDMA_CERR_CERR(ch),
+ 				fsl_edma->membase + EDMA_CERR);
+ 			fsl_edma->chans[ch].status = DMA_ERROR;
++			fsl_edma->chans[ch].idle = true;
+ 		}
+ 	}
+ 	return IRQ_HANDLED;
+@@ -724,6 +737,12 @@ static void fsl_edma_issue_pending(struct dma_chan *chan)
+ 
+ 	spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
+ 
++	if (unlikely(fsl_chan->pm_state != RUNNING)) {
++		spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
++		/* cannot submit due to suspend */
++		return;
++	}
++
+ 	if (vchan_issue_pending(&fsl_chan->vchan) && !fsl_chan->edesc)
+ 		fsl_edma_xfer_desc(fsl_chan);
+ 
+@@ -735,6 +754,7 @@ static struct dma_chan *fsl_edma_xlate(struct of_phandle_args *dma_spec,
+ {
+ 	struct fsl_edma_engine *fsl_edma = ofdma->of_dma_data;
+ 	struct dma_chan *chan, *_chan;
++	struct fsl_edma_chan *fsl_chan;
+ 	unsigned long chans_per_mux = fsl_edma->n_chans / DMAMUX_NR;
+ 
+ 	if (dma_spec->args_count != 2)
+@@ -748,8 +768,10 @@ static struct dma_chan *fsl_edma_xlate(struct of_phandle_args *dma_spec,
+ 			chan = dma_get_slave_channel(chan);
+ 			if (chan) {
+ 				chan->device->privatecnt++;
+-				fsl_edma_chan_mux(to_fsl_edma_chan(chan),
+-					dma_spec->args[1], true);
++				fsl_chan = to_fsl_edma_chan(chan);
++				fsl_chan->slave_id = dma_spec->args[1];
++				fsl_edma_chan_mux(fsl_chan, fsl_chan->slave_id,
++						true);
+ 				mutex_unlock(&fsl_edma->fsl_edma_mutex);
+ 				return chan;
+ 			}
+@@ -888,7 +910,9 @@ static int fsl_edma_probe(struct platform_device *pdev)
+ 		struct fsl_edma_chan *fsl_chan = &fsl_edma->chans[i];
+ 
+ 		fsl_chan->edma = fsl_edma;
+-
++		fsl_chan->pm_state = RUNNING;
++		fsl_chan->slave_id = 0;
++		fsl_chan->idle = true;
+ 		fsl_chan->vchan.desc_free = fsl_edma_free_desc;
+ 		vchan_init(&fsl_chan->vchan, &fsl_edma->dma_dev);
+ 
+@@ -959,6 +983,60 @@ static int fsl_edma_remove(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++static int fsl_edma_suspend_late(struct device *dev)
++{
++	struct fsl_edma_engine *fsl_edma = dev_get_drvdata(dev);
++	struct fsl_edma_chan *fsl_chan;
++	unsigned long flags;
++	int i;
++
++	for (i = 0; i < fsl_edma->n_chans; i++) {
++		fsl_chan = &fsl_edma->chans[i];
++		spin_lock_irqsave(&fsl_chan->vchan.lock, flags);
++		/* Make sure chan is idle or will force disable. */
++		if (unlikely(!fsl_chan->idle)) {
++			dev_warn(dev, "WARN: There is non-idle channel.");
++			fsl_edma_disable_request(fsl_chan);
++			fsl_edma_chan_mux(fsl_chan, 0, false);
++		}
++
++		fsl_chan->pm_state = SUSPENDED;
++		spin_unlock_irqrestore(&fsl_chan->vchan.lock, flags);
++	}
++
++	return 0;
++}
++
++static int fsl_edma_resume_early(struct device *dev)
++{
++	struct fsl_edma_engine *fsl_edma = dev_get_drvdata(dev);
++	struct fsl_edma_chan *fsl_chan;
++	int i;
++
++	for (i = 0; i < fsl_edma->n_chans; i++) {
++		fsl_chan = &fsl_edma->chans[i];
++		fsl_chan->pm_state = RUNNING;
++		edma_writew(fsl_edma, 0x0, fsl_edma->membase + EDMA_TCD_CSR(i));
++		if (fsl_chan->slave_id != 0)
++			fsl_edma_chan_mux(fsl_chan, fsl_chan->slave_id, true);
++	}
++
++	edma_writel(fsl_edma, EDMA_CR_ERGA | EDMA_CR_ERCA,
++			fsl_edma->membase + EDMA_CR);
++
++	return 0;
++}
++
++/*
++ * eDMA provides the service to others, so it should be suspend late
++ * and resume early. When eDMA suspend, all of the clients should stop
++ * the DMA data transmission and let the channel idle.
++ */
++static const struct dev_pm_ops fsl_edma_pm_ops = {
++	.suspend_late   = fsl_edma_suspend_late,
++	.resume_early   = fsl_edma_resume_early,
++};
++
+ static const struct of_device_id fsl_edma_dt_ids[] = {
+ 	{ .compatible = "fsl,vf610-edma", },
+ 	{ /* sentinel */ }
+@@ -969,6 +1047,7 @@ static struct platform_driver fsl_edma_driver = {
+ 	.driver		= {
+ 		.name	= "fsl-edma",
+ 		.of_match_table = fsl_edma_dt_ids,
++		.pm     = &fsl_edma_pm_ops,
+ 	},
+ 	.probe          = fsl_edma_probe,
+ 	.remove		= fsl_edma_remove,
+-- 
+1.9.0
+
+
+From 1dbe63360792142a9fef7cc492fb66636b5b5fb6 Mon Sep 17 00:00:00 2001
+From: Jaiprakash Singh <b44839@freescale.com>
+Date: Wed, 20 May 2015 21:17:11 -0500
+Subject: [PATCH 05/26] fsl_ifc: Change IO accessor based on endianness
+
+IFC IO accressor are set at run time based
+on IFC IP registers endianness.IFC node in
+DTS file contains information about
+endianness.
+
+Signed-off-by: Jaiprakash Singh <b44839@freescale.com>
+Signed-off-by: Scott Wood <scottwood@freescale.com>
+Acked-by: Brian Norris <computersforpeace@gmail.com>
+(cherry picked from commit cf184dc2dd33847f4b211b01d8c7ec0526e6c5e4)
+---
+ .../bindings/memory-controllers/fsl/ifc.txt        |   3 +
+ drivers/memory/fsl_ifc.c                           |  43 ++--
+ drivers/mtd/nand/fsl_ifc_nand.c                    | 258 +++++++++++----------
+ include/linux/fsl_ifc.h                            |  50 ++++
+ 4 files changed, 213 insertions(+), 141 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/memory-controllers/fsl/ifc.txt b/Documentation/devicetree/bindings/memory-controllers/fsl/ifc.txt
+index d5e3704..89427b0 100644
+--- a/Documentation/devicetree/bindings/memory-controllers/fsl/ifc.txt
++++ b/Documentation/devicetree/bindings/memory-controllers/fsl/ifc.txt
+@@ -18,6 +18,8 @@ Properties:
+               interrupt (NAND_EVTER_STAT).  If there is only one,
+               that interrupt reports both types of event.
+ 
++- little-endian : If this property is absent, the big-endian mode will
++                  be in use as default for registers.
+ 
+ - ranges : Each range corresponds to a single chipselect, and covers
+            the entire access window as configured.
+@@ -34,6 +36,7 @@ Example:
+ 		#size-cells = <1>;
+ 		reg = <0x0 0xffe1e000 0 0x2000>;
+ 		interrupts = <16 2 19 2>;
++		little-endian;
+ 
+ 		/* NOR, NAND Flashes and CPLD on board */
+ 		ranges = <0x0 0x0 0x0 0xee000000 0x02000000
+diff --git a/drivers/memory/fsl_ifc.c b/drivers/memory/fsl_ifc.c
+index 410c397..e87459f 100644
+--- a/drivers/memory/fsl_ifc.c
++++ b/drivers/memory/fsl_ifc.c
+@@ -62,7 +62,7 @@ int fsl_ifc_find(phys_addr_t addr_base)
+ 		return -ENODEV;
+ 
+ 	for (i = 0; i < fsl_ifc_ctrl_dev->banks; i++) {
+-		u32 cspr = in_be32(&fsl_ifc_ctrl_dev->regs->cspr_cs[i].cspr);
++		u32 cspr = ifc_in32(&fsl_ifc_ctrl_dev->regs->cspr_cs[i].cspr);
+ 		if (cspr & CSPR_V && (cspr & CSPR_BA) ==
+ 				convert_ifc_address(addr_base))
+ 			return i;
+@@ -79,16 +79,16 @@ static int fsl_ifc_ctrl_init(struct fsl_ifc_ctrl *ctrl)
+ 	/*
+ 	 * Clear all the common status and event registers
+ 	 */
+-	if (in_be32(&ifc->cm_evter_stat) & IFC_CM_EVTER_STAT_CSER)
+-		out_be32(&ifc->cm_evter_stat, IFC_CM_EVTER_STAT_CSER);
++	if (ifc_in32(&ifc->cm_evter_stat) & IFC_CM_EVTER_STAT_CSER)
++		ifc_out32(IFC_CM_EVTER_STAT_CSER, &ifc->cm_evter_stat);
+ 
+ 	/* enable all error and events */
+-	out_be32(&ifc->cm_evter_en, IFC_CM_EVTER_EN_CSEREN);
++	ifc_out32(IFC_CM_EVTER_EN_CSEREN, &ifc->cm_evter_en);
+ 
+ 	/* enable all error and event interrupts */
+-	out_be32(&ifc->cm_evter_intr_en, IFC_CM_EVTER_INTR_EN_CSERIREN);
+-	out_be32(&ifc->cm_erattr0, 0x0);
+-	out_be32(&ifc->cm_erattr1, 0x0);
++	ifc_out32(IFC_CM_EVTER_INTR_EN_CSERIREN, &ifc->cm_evter_intr_en);
++	ifc_out32(0x0, &ifc->cm_erattr0);
++	ifc_out32(0x0, &ifc->cm_erattr1);
+ 
+ 	return 0;
+ }
+@@ -127,9 +127,9 @@ static u32 check_nand_stat(struct fsl_ifc_ctrl *ctrl)
+ 
+ 	spin_lock_irqsave(&nand_irq_lock, flags);
+ 
+-	stat = in_be32(&ifc->ifc_nand.nand_evter_stat);
++	stat = ifc_in32(&ifc->ifc_nand.nand_evter_stat);
+ 	if (stat) {
+-		out_be32(&ifc->ifc_nand.nand_evter_stat, stat);
++		ifc_out32(stat, &ifc->ifc_nand.nand_evter_stat);
+ 		ctrl->nand_stat = stat;
+ 		wake_up(&ctrl->nand_wait);
+ 	}
+@@ -161,16 +161,16 @@ static irqreturn_t fsl_ifc_ctrl_irq(int irqno, void *data)
+ 	irqreturn_t ret = IRQ_NONE;
+ 
+ 	/* read for chip select error */
+-	cs_err = in_be32(&ifc->cm_evter_stat);
++	cs_err = ifc_in32(&ifc->cm_evter_stat);
+ 	if (cs_err) {
+ 		dev_err(ctrl->dev, "transaction sent to IFC is not mapped to"
+ 				"any memory bank 0x%08X\n", cs_err);
+ 		/* clear the chip select error */
+-		out_be32(&ifc->cm_evter_stat, IFC_CM_EVTER_STAT_CSER);
++		ifc_out32(IFC_CM_EVTER_STAT_CSER, &ifc->cm_evter_stat);
+ 
+ 		/* read error attribute registers print the error information */
+-		status = in_be32(&ifc->cm_erattr0);
+-		err_addr = in_be32(&ifc->cm_erattr1);
++		status = ifc_in32(&ifc->cm_erattr0);
++		err_addr = ifc_in32(&ifc->cm_erattr1);
+ 
+ 		if (status & IFC_CM_ERATTR0_ERTYP_READ)
+ 			dev_err(ctrl->dev, "Read transaction error"
+@@ -231,6 +231,23 @@ static int fsl_ifc_ctrl_probe(struct platform_device *dev)
+ 		goto err;
+ 	}
+ 
++	version = ifc_in32(&fsl_ifc_ctrl_dev->regs->ifc_rev) &
++			FSL_IFC_VERSION_MASK;
++	banks = (version == FSL_IFC_VERSION_1_0_0) ? 4 : 8;
++	dev_info(&dev->dev, "IFC version %d.%d, %d banks\n",
++		version >> 24, (version >> 16) & 0xf, banks);
++
++	fsl_ifc_ctrl_dev->version = version;
++	fsl_ifc_ctrl_dev->banks = banks;
++
++	if (of_property_read_bool(dev->dev.of_node, "little-endian")) {
++		fsl_ifc_ctrl_dev->little_endian = true;
++		dev_dbg(&dev->dev, "IFC REGISTERS are LITTLE endian\n");
++	} else {
++		fsl_ifc_ctrl_dev->little_endian = false;
++		dev_dbg(&dev->dev, "IFC REGISTERS are BIG endian\n");
++	}
++
+ 	version = ioread32be(&fsl_ifc_ctrl_dev->regs->ifc_rev) &
+ 			FSL_IFC_VERSION_MASK;
+ 	banks = (version == FSL_IFC_VERSION_1_0_0) ? 4 : 8;
+diff --git a/drivers/mtd/nand/fsl_ifc_nand.c b/drivers/mtd/nand/fsl_ifc_nand.c
+index 51394e5..a4e27e8 100644
+--- a/drivers/mtd/nand/fsl_ifc_nand.c
++++ b/drivers/mtd/nand/fsl_ifc_nand.c
+@@ -238,8 +238,8 @@ static void set_addr(struct mtd_info *mtd, int column, int page_addr, int oob)
+ 
+ 	ifc_nand_ctrl->page = page_addr;
+ 	/* Program ROW0/COL0 */
+-	iowrite32be(page_addr, &ifc->ifc_nand.row0);
+-	iowrite32be((oob ? IFC_NAND_COL_MS : 0) | column, &ifc->ifc_nand.col0);
++	ifc_out32(page_addr, &ifc->ifc_nand.row0);
++	ifc_out32((oob ? IFC_NAND_COL_MS : 0) | column, &ifc->ifc_nand.col0);
+ 
+ 	buf_num = page_addr & priv->bufnum_mask;
+ 
+@@ -301,19 +301,19 @@ static void fsl_ifc_run_command(struct mtd_info *mtd)
+ 	int i;
+ 
+ 	/* set the chip select for NAND Transaction */
+-	iowrite32be(priv->bank << IFC_NAND_CSEL_SHIFT,
+-		    &ifc->ifc_nand.nand_csel);
++	ifc_out32(priv->bank << IFC_NAND_CSEL_SHIFT,
++		  &ifc->ifc_nand.nand_csel);
+ 
+ 	dev_vdbg(priv->dev,
+ 			"%s: fir0=%08x fcr0=%08x\n",
+ 			__func__,
+-			ioread32be(&ifc->ifc_nand.nand_fir0),
+-			ioread32be(&ifc->ifc_nand.nand_fcr0));
++			ifc_in32(&ifc->ifc_nand.nand_fir0),
++			ifc_in32(&ifc->ifc_nand.nand_fcr0));
+ 
+ 	ctrl->nand_stat = 0;
+ 
+ 	/* start read/write seq */
+-	iowrite32be(IFC_NAND_SEQ_STRT_FIR_STRT, &ifc->ifc_nand.nandseq_strt);
++	ifc_out32(IFC_NAND_SEQ_STRT_FIR_STRT, &ifc->ifc_nand.nandseq_strt);
+ 
+ 	/* wait for command complete flag or timeout */
+ 	wait_event_timeout(ctrl->nand_wait, ctrl->nand_stat,
+@@ -336,7 +336,7 @@ static void fsl_ifc_run_command(struct mtd_info *mtd)
+ 		int sector_end = sector + chip->ecc.steps - 1;
+ 
+ 		for (i = sector / 4; i <= sector_end / 4; i++)
+-			eccstat[i] = ioread32be(&ifc->ifc_nand.nand_eccstat[i]);
++			eccstat[i] = ifc_in32(&ifc->ifc_nand.nand_eccstat[i]);
+ 
+ 		for (i = sector; i <= sector_end; i++) {
+ 			errors = check_read_ecc(mtd, ctrl, eccstat, i);
+@@ -376,33 +376,33 @@ static void fsl_ifc_do_read(struct nand_chip *chip,
+ 
+ 	/* Program FIR/IFC_NAND_FCR0 for Small/Large page */
+ 	if (mtd->writesize > 512) {
+-		iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-			    (IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP1_SHIFT) |
+-			    (IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP2_SHIFT) |
+-			    (IFC_FIR_OP_CMD1 << IFC_NAND_FIR0_OP3_SHIFT) |
+-			    (IFC_FIR_OP_RBCD << IFC_NAND_FIR0_OP4_SHIFT),
+-			    &ifc->ifc_nand.nand_fir0);
+-		iowrite32be(0x0, &ifc->ifc_nand.nand_fir1);
+-
+-		iowrite32be((NAND_CMD_READ0 << IFC_NAND_FCR0_CMD0_SHIFT) |
+-			    (NAND_CMD_READSTART << IFC_NAND_FCR0_CMD1_SHIFT),
+-			    &ifc->ifc_nand.nand_fcr0);
++		ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++			  (IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP1_SHIFT) |
++			  (IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP2_SHIFT) |
++			  (IFC_FIR_OP_CMD1 << IFC_NAND_FIR0_OP3_SHIFT) |
++			  (IFC_FIR_OP_RBCD << IFC_NAND_FIR0_OP4_SHIFT),
++			  &ifc->ifc_nand.nand_fir0);
++		ifc_out32(0x0, &ifc->ifc_nand.nand_fir1);
++
++		ifc_out32((NAND_CMD_READ0 << IFC_NAND_FCR0_CMD0_SHIFT) |
++			  (NAND_CMD_READSTART << IFC_NAND_FCR0_CMD1_SHIFT),
++			  &ifc->ifc_nand.nand_fcr0);
+ 	} else {
+-		iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-			    (IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP1_SHIFT) |
+-			    (IFC_FIR_OP_RA0  << IFC_NAND_FIR0_OP2_SHIFT) |
+-			    (IFC_FIR_OP_RBCD << IFC_NAND_FIR0_OP3_SHIFT),
+-			    &ifc->ifc_nand.nand_fir0);
+-		iowrite32be(0x0, &ifc->ifc_nand.nand_fir1);
++		ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++			  (IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP1_SHIFT) |
++			  (IFC_FIR_OP_RA0  << IFC_NAND_FIR0_OP2_SHIFT) |
++			  (IFC_FIR_OP_RBCD << IFC_NAND_FIR0_OP3_SHIFT),
++			  &ifc->ifc_nand.nand_fir0);
++		ifc_out32(0x0, &ifc->ifc_nand.nand_fir1);
+ 
+ 		if (oob)
+-			iowrite32be(NAND_CMD_READOOB <<
+-				    IFC_NAND_FCR0_CMD0_SHIFT,
+-				    &ifc->ifc_nand.nand_fcr0);
++			ifc_out32(NAND_CMD_READOOB <<
++				  IFC_NAND_FCR0_CMD0_SHIFT,
++				  &ifc->ifc_nand.nand_fcr0);
+ 		else
+-			iowrite32be(NAND_CMD_READ0 <<
+-				    IFC_NAND_FCR0_CMD0_SHIFT,
+-				    &ifc->ifc_nand.nand_fcr0);
++			ifc_out32(NAND_CMD_READ0 <<
++				  IFC_NAND_FCR0_CMD0_SHIFT,
++				  &ifc->ifc_nand.nand_fcr0);
+ 	}
+ }
+ 
+@@ -422,7 +422,7 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 	switch (command) {
+ 	/* READ0 read the entire buffer to use hardware ECC. */
+ 	case NAND_CMD_READ0:
+-		iowrite32be(0, &ifc->ifc_nand.nand_fbcr);
++		ifc_out32(0, &ifc->ifc_nand.nand_fbcr);
+ 		set_addr(mtd, 0, page_addr, 0);
+ 
+ 		ifc_nand_ctrl->read_bytes = mtd->writesize + mtd->oobsize;
+@@ -437,7 +437,7 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 
+ 	/* READOOB reads only the OOB because no ECC is performed. */
+ 	case NAND_CMD_READOOB:
+-		iowrite32be(mtd->oobsize - column, &ifc->ifc_nand.nand_fbcr);
++		ifc_out32(mtd->oobsize - column, &ifc->ifc_nand.nand_fbcr);
+ 		set_addr(mtd, column, page_addr, 1);
+ 
+ 		ifc_nand_ctrl->read_bytes = mtd->writesize + mtd->oobsize;
+@@ -453,19 +453,19 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 		if (command == NAND_CMD_PARAM)
+ 			timing = IFC_FIR_OP_RBCD;
+ 
+-		iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-			    (IFC_FIR_OP_UA  << IFC_NAND_FIR0_OP1_SHIFT) |
+-			    (timing << IFC_NAND_FIR0_OP2_SHIFT),
+-			    &ifc->ifc_nand.nand_fir0);
+-		iowrite32be(command << IFC_NAND_FCR0_CMD0_SHIFT,
+-			    &ifc->ifc_nand.nand_fcr0);
+-		iowrite32be(column, &ifc->ifc_nand.row3);
++		ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++			  (IFC_FIR_OP_UA  << IFC_NAND_FIR0_OP1_SHIFT) |
++			  (timing << IFC_NAND_FIR0_OP2_SHIFT),
++			  &ifc->ifc_nand.nand_fir0);
++		ifc_out32(command << IFC_NAND_FCR0_CMD0_SHIFT,
++			  &ifc->ifc_nand.nand_fcr0);
++		ifc_out32(column, &ifc->ifc_nand.row3);
+ 
+ 		/*
+ 		 * although currently it's 8 bytes for READID, we always read
+ 		 * the maximum 256 bytes(for PARAM)
+ 		 */
+-		iowrite32be(256, &ifc->ifc_nand.nand_fbcr);
++		ifc_out32(256, &ifc->ifc_nand.nand_fbcr);
+ 		ifc_nand_ctrl->read_bytes = 256;
+ 
+ 		set_addr(mtd, 0, 0, 0);
+@@ -480,16 +480,16 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 
+ 	/* ERASE2 uses the block and page address from ERASE1 */
+ 	case NAND_CMD_ERASE2:
+-		iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-			    (IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP1_SHIFT) |
+-			    (IFC_FIR_OP_CMD1 << IFC_NAND_FIR0_OP2_SHIFT),
+-			    &ifc->ifc_nand.nand_fir0);
++		ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++			  (IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP1_SHIFT) |
++			  (IFC_FIR_OP_CMD1 << IFC_NAND_FIR0_OP2_SHIFT),
++			  &ifc->ifc_nand.nand_fir0);
+ 
+-		iowrite32be((NAND_CMD_ERASE1 << IFC_NAND_FCR0_CMD0_SHIFT) |
+-			    (NAND_CMD_ERASE2 << IFC_NAND_FCR0_CMD1_SHIFT),
+-			    &ifc->ifc_nand.nand_fcr0);
++		ifc_out32((NAND_CMD_ERASE1 << IFC_NAND_FCR0_CMD0_SHIFT) |
++			  (NAND_CMD_ERASE2 << IFC_NAND_FCR0_CMD1_SHIFT),
++			  &ifc->ifc_nand.nand_fcr0);
+ 
+-		iowrite32be(0, &ifc->ifc_nand.nand_fbcr);
++		ifc_out32(0, &ifc->ifc_nand.nand_fbcr);
+ 		ifc_nand_ctrl->read_bytes = 0;
+ 		fsl_ifc_run_command(mtd);
+ 		return;
+@@ -506,19 +506,18 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 				(NAND_CMD_STATUS << IFC_NAND_FCR0_CMD1_SHIFT) |
+ 				(NAND_CMD_PAGEPROG << IFC_NAND_FCR0_CMD2_SHIFT);
+ 
+-			iowrite32be(
+-				 (IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-				 (IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP1_SHIFT) |
+-				 (IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP2_SHIFT) |
+-				 (IFC_FIR_OP_WBCD  << IFC_NAND_FIR0_OP3_SHIFT) |
+-				 (IFC_FIR_OP_CMD2 << IFC_NAND_FIR0_OP4_SHIFT),
+-				 &ifc->ifc_nand.nand_fir0);
+-			iowrite32be(
+-				 (IFC_FIR_OP_CW1 << IFC_NAND_FIR1_OP5_SHIFT) |
+-				 (IFC_FIR_OP_RDSTAT <<
+-					IFC_NAND_FIR1_OP6_SHIFT) |
+-				 (IFC_FIR_OP_NOP << IFC_NAND_FIR1_OP7_SHIFT),
+-				 &ifc->ifc_nand.nand_fir1);
++			ifc_out32(
++				(IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++				(IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP1_SHIFT) |
++				(IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP2_SHIFT) |
++				(IFC_FIR_OP_WBCD << IFC_NAND_FIR0_OP3_SHIFT) |
++				(IFC_FIR_OP_CMD2 << IFC_NAND_FIR0_OP4_SHIFT),
++				&ifc->ifc_nand.nand_fir0);
++			ifc_out32(
++				(IFC_FIR_OP_CW1 << IFC_NAND_FIR1_OP5_SHIFT) |
++				(IFC_FIR_OP_RDSTAT << IFC_NAND_FIR1_OP6_SHIFT) |
++				(IFC_FIR_OP_NOP << IFC_NAND_FIR1_OP7_SHIFT),
++				&ifc->ifc_nand.nand_fir1);
+ 		} else {
+ 			nand_fcr0 = ((NAND_CMD_PAGEPROG <<
+ 					IFC_NAND_FCR0_CMD1_SHIFT) |
+@@ -527,20 +526,19 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 				    (NAND_CMD_STATUS <<
+ 					IFC_NAND_FCR0_CMD3_SHIFT));
+ 
+-			iowrite32be(
++			ifc_out32(
+ 				(IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+ 				(IFC_FIR_OP_CMD2 << IFC_NAND_FIR0_OP1_SHIFT) |
+ 				(IFC_FIR_OP_CA0 << IFC_NAND_FIR0_OP2_SHIFT) |
+ 				(IFC_FIR_OP_RA0 << IFC_NAND_FIR0_OP3_SHIFT) |
+ 				(IFC_FIR_OP_WBCD << IFC_NAND_FIR0_OP4_SHIFT),
+ 				&ifc->ifc_nand.nand_fir0);
+-			iowrite32be(
+-				 (IFC_FIR_OP_CMD1 << IFC_NAND_FIR1_OP5_SHIFT) |
+-				 (IFC_FIR_OP_CW3 << IFC_NAND_FIR1_OP6_SHIFT) |
+-				 (IFC_FIR_OP_RDSTAT <<
+-					IFC_NAND_FIR1_OP7_SHIFT) |
+-				 (IFC_FIR_OP_NOP << IFC_NAND_FIR1_OP8_SHIFT),
+-				  &ifc->ifc_nand.nand_fir1);
++			ifc_out32(
++				(IFC_FIR_OP_CMD1 << IFC_NAND_FIR1_OP5_SHIFT) |
++				(IFC_FIR_OP_CW3 << IFC_NAND_FIR1_OP6_SHIFT) |
++				(IFC_FIR_OP_RDSTAT << IFC_NAND_FIR1_OP7_SHIFT) |
++				(IFC_FIR_OP_NOP << IFC_NAND_FIR1_OP8_SHIFT),
++				&ifc->ifc_nand.nand_fir1);
+ 
+ 			if (column >= mtd->writesize)
+ 				nand_fcr0 |=
+@@ -555,7 +553,7 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 			column -= mtd->writesize;
+ 			ifc_nand_ctrl->oob = 1;
+ 		}
+-		iowrite32be(nand_fcr0, &ifc->ifc_nand.nand_fcr0);
++		ifc_out32(nand_fcr0, &ifc->ifc_nand.nand_fcr0);
+ 		set_addr(mtd, column, page_addr, ifc_nand_ctrl->oob);
+ 		return;
+ 	}
+@@ -563,24 +561,26 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 	/* PAGEPROG reuses all of the setup from SEQIN and adds the length */
+ 	case NAND_CMD_PAGEPROG: {
+ 		if (ifc_nand_ctrl->oob) {
+-			iowrite32be(ifc_nand_ctrl->index -
+-				    ifc_nand_ctrl->column,
+-				    &ifc->ifc_nand.nand_fbcr);
++			ifc_out32(ifc_nand_ctrl->index -
++				  ifc_nand_ctrl->column,
++				  &ifc->ifc_nand.nand_fbcr);
+ 		} else {
+-			iowrite32be(0, &ifc->ifc_nand.nand_fbcr);
++			ifc_out32(0, &ifc->ifc_nand.nand_fbcr);
+ 		}
+ 
+ 		fsl_ifc_run_command(mtd);
+ 		return;
+ 	}
+ 
+-	case NAND_CMD_STATUS:
+-		iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-			    (IFC_FIR_OP_RB << IFC_NAND_FIR0_OP1_SHIFT),
+-			    &ifc->ifc_nand.nand_fir0);
+-		iowrite32be(NAND_CMD_STATUS << IFC_NAND_FCR0_CMD0_SHIFT,
+-			    &ifc->ifc_nand.nand_fcr0);
+-		iowrite32be(1, &ifc->ifc_nand.nand_fbcr);
++	case NAND_CMD_STATUS: {
++		void __iomem *addr;
++
++		ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++			  (IFC_FIR_OP_RB << IFC_NAND_FIR0_OP1_SHIFT),
++			  &ifc->ifc_nand.nand_fir0);
++		ifc_out32(NAND_CMD_STATUS << IFC_NAND_FCR0_CMD0_SHIFT,
++			  &ifc->ifc_nand.nand_fcr0);
++		ifc_out32(1, &ifc->ifc_nand.nand_fbcr);
+ 		set_addr(mtd, 0, 0, 0);
+ 		ifc_nand_ctrl->read_bytes = 1;
+ 
+@@ -590,17 +590,19 @@ static void fsl_ifc_cmdfunc(struct mtd_info *mtd, unsigned int command,
+ 		 * The chip always seems to report that it is
+ 		 * write-protected, even when it is not.
+ 		 */
++		addr = ifc_nand_ctrl->addr;
+ 		if (chip->options & NAND_BUSWIDTH_16)
+-			setbits16(ifc_nand_ctrl->addr, NAND_STATUS_WP);
++			ifc_out16(ifc_in16(addr) | (NAND_STATUS_WP), addr);
+ 		else
+-			setbits8(ifc_nand_ctrl->addr, NAND_STATUS_WP);
++			ifc_out8(ifc_in8(addr) | (NAND_STATUS_WP), addr);
+ 		return;
++	}
+ 
+ 	case NAND_CMD_RESET:
+-		iowrite32be(IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT,
+-			    &ifc->ifc_nand.nand_fir0);
+-		iowrite32be(NAND_CMD_RESET << IFC_NAND_FCR0_CMD0_SHIFT,
+-			    &ifc->ifc_nand.nand_fcr0);
++		ifc_out32(IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT,
++			  &ifc->ifc_nand.nand_fir0);
++		ifc_out32(NAND_CMD_RESET << IFC_NAND_FCR0_CMD0_SHIFT,
++			  &ifc->ifc_nand.nand_fcr0);
+ 		fsl_ifc_run_command(mtd);
+ 		return;
+ 
+@@ -658,7 +660,7 @@ static uint8_t fsl_ifc_read_byte(struct mtd_info *mtd)
+ 	 */
+ 	if (ifc_nand_ctrl->index < ifc_nand_ctrl->read_bytes) {
+ 		offset = ifc_nand_ctrl->index++;
+-		return in_8(ifc_nand_ctrl->addr + offset);
++		return ifc_in8(ifc_nand_ctrl->addr + offset);
+ 	}
+ 
+ 	dev_err(priv->dev, "%s: beyond end of buffer\n", __func__);
+@@ -680,7 +682,7 @@ static uint8_t fsl_ifc_read_byte16(struct mtd_info *mtd)
+ 	 * next byte.
+ 	 */
+ 	if (ifc_nand_ctrl->index < ifc_nand_ctrl->read_bytes) {
+-		data = in_be16(ifc_nand_ctrl->addr + ifc_nand_ctrl->index);
++		data = ifc_in16(ifc_nand_ctrl->addr + ifc_nand_ctrl->index);
+ 		ifc_nand_ctrl->index += 2;
+ 		return (uint8_t) data;
+ 	}
+@@ -726,18 +728,18 @@ static int fsl_ifc_wait(struct mtd_info *mtd, struct nand_chip *chip)
+ 	u32 nand_fsr;
+ 
+ 	/* Use READ_STATUS command, but wait for the device to be ready */
+-	iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-		    (IFC_FIR_OP_RDSTAT << IFC_NAND_FIR0_OP1_SHIFT),
+-		    &ifc->ifc_nand.nand_fir0);
+-	iowrite32be(NAND_CMD_STATUS << IFC_NAND_FCR0_CMD0_SHIFT,
+-		    &ifc->ifc_nand.nand_fcr0);
+-	iowrite32be(1, &ifc->ifc_nand.nand_fbcr);
++	ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++		  (IFC_FIR_OP_RDSTAT << IFC_NAND_FIR0_OP1_SHIFT),
++		  &ifc->ifc_nand.nand_fir0);
++	ifc_out32(NAND_CMD_STATUS << IFC_NAND_FCR0_CMD0_SHIFT,
++		  &ifc->ifc_nand.nand_fcr0);
++	ifc_out32(1, &ifc->ifc_nand.nand_fbcr);
+ 	set_addr(mtd, 0, 0, 0);
+ 	ifc_nand_ctrl->read_bytes = 1;
+ 
+ 	fsl_ifc_run_command(mtd);
+ 
+-	nand_fsr = ioread32be(&ifc->ifc_nand.nand_fsr);
++	nand_fsr = ifc_in32(&ifc->ifc_nand.nand_fsr);
+ 
+ 	/*
+ 	 * The chip always seems to report that it is
+@@ -829,34 +831,34 @@ static void fsl_ifc_sram_init(struct fsl_ifc_mtd *priv)
+ 	uint32_t cs = priv->bank;
+ 
+ 	/* Save CSOR and CSOR_ext */
+-	csor = ioread32be(&ifc->csor_cs[cs].csor);
+-	csor_ext = ioread32be(&ifc->csor_cs[cs].csor_ext);
++	csor = ifc_in32(&ifc->csor_cs[cs].csor);
++	csor_ext = ifc_in32(&ifc->csor_cs[cs].csor_ext);
+ 
+ 	/* chage PageSize 8K and SpareSize 1K*/
+ 	csor_8k = (csor & ~(CSOR_NAND_PGS_MASK)) | 0x0018C000;
+-	iowrite32be(csor_8k, &ifc->csor_cs[cs].csor);
+-	iowrite32be(0x0000400, &ifc->csor_cs[cs].csor_ext);
++	ifc_out32(csor_8k, &ifc->csor_cs[cs].csor);
++	ifc_out32(0x0000400, &ifc->csor_cs[cs].csor_ext);
+ 
+ 	/* READID */
+-	iowrite32be((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
+-		    (IFC_FIR_OP_UA  << IFC_NAND_FIR0_OP1_SHIFT) |
+-		    (IFC_FIR_OP_RB << IFC_NAND_FIR0_OP2_SHIFT),
+-		    &ifc->ifc_nand.nand_fir0);
+-	iowrite32be(NAND_CMD_READID << IFC_NAND_FCR0_CMD0_SHIFT,
+-		    &ifc->ifc_nand.nand_fcr0);
+-	iowrite32be(0x0, &ifc->ifc_nand.row3);
++	ifc_out32((IFC_FIR_OP_CW0 << IFC_NAND_FIR0_OP0_SHIFT) |
++		  (IFC_FIR_OP_UA  << IFC_NAND_FIR0_OP1_SHIFT) |
++		  (IFC_FIR_OP_RB << IFC_NAND_FIR0_OP2_SHIFT),
++		  &ifc->ifc_nand.nand_fir0);
++	ifc_out32(NAND_CMD_READID << IFC_NAND_FCR0_CMD0_SHIFT,
++		  &ifc->ifc_nand.nand_fcr0);
++	ifc_out32(0x0, &ifc->ifc_nand.row3);
+ 
+-	iowrite32be(0x0, &ifc->ifc_nand.nand_fbcr);
++	ifc_out32(0x0, &ifc->ifc_nand.nand_fbcr);
+ 
+ 	/* Program ROW0/COL0 */
+-	iowrite32be(0x0, &ifc->ifc_nand.row0);
+-	iowrite32be(0x0, &ifc->ifc_nand.col0);
++	ifc_out32(0x0, &ifc->ifc_nand.row0);
++	ifc_out32(0x0, &ifc->ifc_nand.col0);
+ 
+ 	/* set the chip select for NAND Transaction */
+-	iowrite32be(cs << IFC_NAND_CSEL_SHIFT, &ifc->ifc_nand.nand_csel);
++	ifc_out32(cs << IFC_NAND_CSEL_SHIFT, &ifc->ifc_nand.nand_csel);
+ 
+ 	/* start read seq */
+-	iowrite32be(IFC_NAND_SEQ_STRT_FIR_STRT, &ifc->ifc_nand.nandseq_strt);
++	ifc_out32(IFC_NAND_SEQ_STRT_FIR_STRT, &ifc->ifc_nand.nandseq_strt);
+ 
+ 	/* wait for command complete flag or timeout */
+ 	wait_event_timeout(ctrl->nand_wait, ctrl->nand_stat,
+@@ -866,8 +868,8 @@ static void fsl_ifc_sram_init(struct fsl_ifc_mtd *priv)
+ 		printk(KERN_ERR "fsl-ifc: Failed to Initialise SRAM\n");
+ 
+ 	/* Restore CSOR and CSOR_ext */
+-	iowrite32be(csor, &ifc->csor_cs[cs].csor);
+-	iowrite32be(csor_ext, &ifc->csor_cs[cs].csor_ext);
++	ifc_out32(csor, &ifc->csor_cs[cs].csor);
++	ifc_out32(csor_ext, &ifc->csor_cs[cs].csor_ext);
+ }
+ 
+ static int fsl_ifc_chip_init(struct fsl_ifc_mtd *priv)
+@@ -884,7 +886,7 @@ static int fsl_ifc_chip_init(struct fsl_ifc_mtd *priv)
+ 
+ 	/* fill in nand_chip structure */
+ 	/* set up function call table */
+-	if ((ioread32be(&ifc->cspr_cs[priv->bank].cspr)) & CSPR_PORT_SIZE_16)
++	if ((ifc_in32(&ifc->cspr_cs[priv->bank].cspr)) & CSPR_PORT_SIZE_16)
+ 		chip->read_byte = fsl_ifc_read_byte16;
+ 	else
+ 		chip->read_byte = fsl_ifc_read_byte;
+@@ -898,13 +900,13 @@ static int fsl_ifc_chip_init(struct fsl_ifc_mtd *priv)
+ 	chip->bbt_td = &bbt_main_descr;
+ 	chip->bbt_md = &bbt_mirror_descr;
+ 
+-	iowrite32be(0x0, &ifc->ifc_nand.ncfgr);
++	ifc_out32(0x0, &ifc->ifc_nand.ncfgr);
+ 
+ 	/* set up nand options */
+ 	chip->bbt_options = NAND_BBT_USE_FLASH;
+ 	chip->options = NAND_NO_SUBPAGE_WRITE;
+ 
+-	if (ioread32be(&ifc->cspr_cs[priv->bank].cspr) & CSPR_PORT_SIZE_16) {
++	if (ifc_in32(&ifc->cspr_cs[priv->bank].cspr) & CSPR_PORT_SIZE_16) {
+ 		chip->read_byte = fsl_ifc_read_byte16;
+ 		chip->options |= NAND_BUSWIDTH_16;
+ 	} else {
+@@ -917,7 +919,7 @@ static int fsl_ifc_chip_init(struct fsl_ifc_mtd *priv)
+ 	chip->ecc.read_page = fsl_ifc_read_page;
+ 	chip->ecc.write_page = fsl_ifc_write_page;
+ 
+-	csor = ioread32be(&ifc->csor_cs[priv->bank].csor);
++	csor = ifc_in32(&ifc->csor_cs[priv->bank].csor);
+ 
+ 	/* Hardware generates ECC per 512 Bytes */
+ 	chip->ecc.size = 512;
+@@ -1006,7 +1008,7 @@ static int fsl_ifc_chip_remove(struct fsl_ifc_mtd *priv)
+ static int match_bank(struct fsl_ifc_regs __iomem *ifc, int bank,
+ 		      phys_addr_t addr)
+ {
+-	u32 cspr = ioread32be(&ifc->cspr_cs[bank].cspr);
++	u32 cspr = ifc_in32(&ifc->cspr_cs[bank].cspr);
+ 
+ 	if (!(cspr & CSPR_V))
+ 		return 0;
+@@ -1092,16 +1094,16 @@ static int fsl_ifc_nand_probe(struct platform_device *dev)
+ 
+ 	dev_set_drvdata(priv->dev, priv);
+ 
+-	iowrite32be(IFC_NAND_EVTER_EN_OPC_EN |
+-		    IFC_NAND_EVTER_EN_FTOER_EN |
+-		    IFC_NAND_EVTER_EN_WPER_EN,
+-		    &ifc->ifc_nand.nand_evter_en);
++	ifc_out32(IFC_NAND_EVTER_EN_OPC_EN |
++		  IFC_NAND_EVTER_EN_FTOER_EN |
++		  IFC_NAND_EVTER_EN_WPER_EN,
++		  &ifc->ifc_nand.nand_evter_en);
+ 
+ 	/* enable NAND Machine Interrupts */
+-	iowrite32be(IFC_NAND_EVTER_INTR_OPCIR_EN |
+-		    IFC_NAND_EVTER_INTR_FTOERIR_EN |
+-		    IFC_NAND_EVTER_INTR_WPERIR_EN,
+-		    &ifc->ifc_nand.nand_evter_intr_en);
++	ifc_out32(IFC_NAND_EVTER_INTR_OPCIR_EN |
++		  IFC_NAND_EVTER_INTR_FTOERIR_EN |
++		  IFC_NAND_EVTER_INTR_WPERIR_EN,
++		  &ifc->ifc_nand.nand_evter_intr_en);
+ 	priv->mtd.name = kasprintf(GFP_KERNEL, "%llx.flash", (u64)res.start);
+ 	if (!priv->mtd.name) {
+ 		ret = -ENOMEM;
+diff --git a/include/linux/fsl_ifc.h b/include/linux/fsl_ifc.h
+index bf0321e..0023088 100644
+--- a/include/linux/fsl_ifc.h
++++ b/include/linux/fsl_ifc.h
+@@ -841,9 +841,59 @@ struct fsl_ifc_ctrl {
+ 
+ 	u32 nand_stat;
+ 	wait_queue_head_t nand_wait;
++	bool little_endian;
+ };
+ 
+ extern struct fsl_ifc_ctrl *fsl_ifc_ctrl_dev;
+ 
++static inline u32 ifc_in32(void __iomem *addr)
++{
++	u32 val;
++
++	if (fsl_ifc_ctrl_dev->little_endian)
++		val = ioread32(addr);
++	else
++		val = ioread32be(addr);
++
++	return val;
++}
++
++static inline u16 ifc_in16(void __iomem *addr)
++{
++	u16 val;
++
++	if (fsl_ifc_ctrl_dev->little_endian)
++		val = ioread16(addr);
++	else
++		val = ioread16be(addr);
++
++	return val;
++}
++
++static inline u8 ifc_in8(void __iomem *addr)
++{
++	return ioread8(addr);
++}
++
++static inline void ifc_out32(u32 val, void __iomem *addr)
++{
++	if (fsl_ifc_ctrl_dev->little_endian)
++		iowrite32(val, addr);
++	else
++		iowrite32be(val, addr);
++}
++
++static inline void ifc_out16(u16 val, void __iomem *addr)
++{
++	if (fsl_ifc_ctrl_dev->little_endian)
++		iowrite16(val, addr);
++	else
++		iowrite16be(val, addr);
++}
++
++static inline void ifc_out8(u8 val, void __iomem *addr)
++{
++	iowrite8(val, addr);
++}
+ 
+ #endif /* __ASM_FSL_IFC_H */
+-- 
+1.9.0
+
+
+From 453ee447be8dbde2ff3a5446cccc8ed387fb780c Mon Sep 17 00:00:00 2001
+From: Lijun Pan <Lijun.Pan@freescale.com>
+Date: Fri, 11 Dec 2015 13:55:02 -0600
+Subject: [PATCH 06/26] fsl-ifc: add missing include on ARM64
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Need to include sched.h to fix the following compilation error
+if FSL_IFC is enabled on ARM64 machine.
+
+In file included from include/linux/mmzone.h:9:0,
+                 from include/linux/gfp.h:5,
+                 from include/linux/kmod.h:22,
+                 from include/linux/module.h:13,
+                 from drivers/memory/fsl_ifc.c:22:
+drivers/memory/fsl_ifc.c: In function ‘check_nand_stat’:
+include/linux/wait.h:165:35: error: ‘TASK_NORMAL’ undeclared (first use in this function)
+ #define wake_up(x)   __wake_up(x, TASK_NORMAL, 1, NULL)
+                                   ^
+drivers/memory/fsl_ifc.c:136:3: note: in expansion of macro ‘wake_up’
+   wake_up(&ctrl->nand_wait);
+   ^
+include/linux/wait.h:165:35: note: each undeclared identifier is reported only once for each function it appears in
+ #define wake_up(x)   __wake_up(x, TASK_NORMAL, 1, NULL)
+                                   ^
+drivers/memory/fsl_ifc.c:136:3: note: in expansion of macro ‘wake_up’
+   wake_up(&ctrl->nand_wait);
+   ^
+
+Analysis is as follows:
+I put some instrumental code and get the
+following .h files inclusion sequence:
+
+In file included from ./arch/arm64/include/asm/compat.h:25:0,
+                 from ./arch/arm64/include/asm/stat.h:23,
+                 from include/linux/stat.h:5,
+                 from include/linux/module.h:10,
+                 from drivers/memory/fsl_ifc.c:23:
+include/linux/sched.h:113:1: error: expected ‘=’, ‘,’, ‘;’, ‘asm’ or ‘__attribute__’ before ‘struct’
+ struct sched_attr {
+ ^
+
+CONFIG_COMPAT=y is enabled while 39 and 48 bit VA is selected.
+When 42 bit VA is selected, it does not enable CONFIG_COMPAT=y
+
+In ./arch/arm64/include/asm/stat.h:23, it has
+"#ifdef CONFIG_COMPAT"
+"#include <asm/compat.h>"
+"..."
+"#endif"
+
+Since ./arch/arm64/include/asm/stat.h does not
+include ./arch/arm64/include/asm/compat.h,
+then it will not include include/linux/sched.h
+Hence we have to manually add "#include <linux/sched.h>"
+in drivers/memory/fsl_ifc.c
+
+Signed-off-by: Lijun Pan <Lijun.Pan@freescale.com>
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+(cherry picked from commit c4aa1937b7f40adc93e2e0a901314a4bd8991174)
+---
+ drivers/memory/fsl_ifc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/memory/fsl_ifc.c b/drivers/memory/fsl_ifc.c
+index e87459f..acd1460 100644
+--- a/drivers/memory/fsl_ifc.c
++++ b/drivers/memory/fsl_ifc.c
+@@ -22,6 +22,7 @@
+ #include <linux/module.h>
+ #include <linux/kernel.h>
+ #include <linux/compiler.h>
++#include <linux/sched.h>
+ #include <linux/spinlock.h>
+ #include <linux/types.h>
+ #include <linux/slab.h>
+-- 
+1.9.0
+
+
+From 26e512759d788317e3bd177f7944fe149d764b1b Mon Sep 17 00:00:00 2001
+From: Raghav Dogra <raghav@freescale.com>
+Date: Wed, 16 Dec 2015 16:11:31 +0530
+Subject: [PATCH 07/26] driver/memory: Removal of deprecated NO_IRQ
+
+Replacing the NO_IRQ macro with 0. If there is no interrupt,
+returned value will be 0 regardless of what NO_IRQ is defined.
+
+Signed-off-by: Raghav Dogra <raghav@freescale.com>
+Signed-off-by: Brian Norris <computersforpeace@gmail.com>
+(cherry picked from commit ed4eeba7338bb123090f1c8b208f64d8184a896d)
+---
+ drivers/memory/fsl_ifc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/memory/fsl_ifc.c b/drivers/memory/fsl_ifc.c
+index acd1460..2a691da 100644
+--- a/drivers/memory/fsl_ifc.c
++++ b/drivers/memory/fsl_ifc.c
+@@ -260,7 +260,7 @@ static int fsl_ifc_ctrl_probe(struct platform_device *dev)
+ 
+ 	/* get the Controller level irq */
+ 	fsl_ifc_ctrl_dev->irq = irq_of_parse_and_map(dev->dev.of_node, 0);
+-	if (fsl_ifc_ctrl_dev->irq == NO_IRQ) {
++	if (fsl_ifc_ctrl_dev->irq == 0) {
+ 		dev_err(&dev->dev, "failed to get irq resource "
+ 							"for IFC\n");
+ 		ret = -ENODEV;
+-- 
+1.9.0
+
+
+From 6c1b4efdfaa1517d844daafda3d0eb5cab285da7 Mon Sep 17 00:00:00 2001
+From: Lijun Pan <Lijun.Pan@freescale.com>
+Date: Mon, 25 Apr 2016 16:14:23 -0500
+Subject: [PATCH 08/26] ifc: enable IFC in ARM SoC
+
+To let FSL_IFC and MTD_NAND_FSL_IFC work in arm and arm64 case,
+change the dependency of FSL_IFC and MTD_NAND_FSL_IFC in Kconfig.
+The file arch/arm/include/asm/prom.h is available for arm, but not arm64.
+As asm/prom.h is not avaialbe for arm64, add two extra linux/of_irq.h
+and linux/of_address.h to let compilation pass for arm64 case.
+This change only affects FSL IFC drivers, not affecting other vendor's SoC.
+
+Signed-off-by: Lijun Pan <Lijun.Pan@freescale.com>
+---
+ drivers/memory/Kconfig   | 2 +-
+ drivers/memory/fsl_ifc.c | 3 ++-
+ drivers/mtd/nand/Kconfig | 2 +-
+ 3 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/memory/Kconfig b/drivers/memory/Kconfig
+index 8406c668..a9986fe 100644
+--- a/drivers/memory/Kconfig
++++ b/drivers/memory/Kconfig
+@@ -89,7 +89,7 @@ config FSL_CORENET_CF
+ 
+ config FSL_IFC
+ 	bool
+-	depends on FSL_SOC
++	depends on FSL_SOC || ARM || ARM64
+ 
+ config JZ4780_NEMC
+ 	bool "Ingenic JZ4780 SoC NEMC driver"
+diff --git a/drivers/memory/fsl_ifc.c b/drivers/memory/fsl_ifc.c
+index 2a691da..f96bbb7 100644
+--- a/drivers/memory/fsl_ifc.c
++++ b/drivers/memory/fsl_ifc.c
+@@ -28,10 +28,11 @@
+ #include <linux/slab.h>
+ #include <linux/io.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/of_device.h>
++#include <linux/of_irq.h>
+ #include <linux/platform_device.h>
+ #include <linux/fsl_ifc.h>
+-#include <asm/prom.h>
+ 
+ struct fsl_ifc_ctrl *fsl_ifc_ctrl_dev;
+ EXPORT_SYMBOL(fsl_ifc_ctrl_dev);
+diff --git a/drivers/mtd/nand/Kconfig b/drivers/mtd/nand/Kconfig
+index 5b2806a..37e6fcb 100644
+--- a/drivers/mtd/nand/Kconfig
++++ b/drivers/mtd/nand/Kconfig
+@@ -439,7 +439,7 @@ config MTD_NAND_FSL_ELBC
+ 
+ config MTD_NAND_FSL_IFC
+ 	tristate "NAND support for Freescale IFC controller"
+-	depends on MTD_NAND && FSL_SOC
++	depends on MTD_NAND && (FSL_SOC || ARM || ARM64)
+ 	select FSL_IFC
+ 	select MEMORY
+ 	help
+-- 
+1.9.0
+
+
+From bd2b0fd037a77f7e7bccee1277275ca5a847cc43 Mon Sep 17 00:00:00 2001
+From: Wei Huang <wei@redhat.com>
+Date: Fri, 9 Oct 2015 10:08:43 -0500
+Subject: [PATCH 09/26] arm/arm64: KVM : Enable vhost device selection under
+ KVM config menu
+
+vhost drivers provide guest VMs with better I/O performance and lower
+CPU utilization. This patch allows users to select vhost devices under
+KVM configuration menu on ARM. This makes vhost support on arm/arm64
+on a par with other architectures (e.g. x86, ppc).
+
+Signed-off-by: Wei Huang <wei@redhat.com>
+Signed-off-by: Christoffer Dall <christoffer.dall@linaro.org>
+(cherry picked from commit 75755c6d02df9e9b959b3066c12de5494907e3d9)
+Signed-off-by: Lijun Pan <Lijun.Pan@freescale.com>
+(Lijun solved Conflicts in arch/arm/kvm/Kconfig & arch/arm64/kvm/Kconfig)
+---
+ arch/arm/kvm/Kconfig   | 2 ++
+ arch/arm64/kvm/Kconfig | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/arch/arm/kvm/Kconfig b/arch/arm/kvm/Kconfig
+index bfb915d..2b862df 100644
+--- a/arch/arm/kvm/Kconfig
++++ b/arch/arm/kvm/Kconfig
+@@ -56,4 +56,6 @@ config KVM_ARM_MAX_VCPUS
+ 	  large, so only choose a reasonable number that you expect to
+ 	  actually use.
+ 
++source drivers/vhost/Kconfig
++
+ endif # VIRTUALIZATION
+diff --git a/arch/arm64/kvm/Kconfig b/arch/arm64/kvm/Kconfig
+index bfffe8f..ed25689 100644
+--- a/arch/arm64/kvm/Kconfig
++++ b/arch/arm64/kvm/Kconfig
+@@ -52,4 +52,6 @@ config KVM_ARM_MAX_VCPUS
+ 	  large, so only choose a reasonable number that you expect to
+ 	  actually use.
+ 
++source drivers/vhost/Kconfig
++
+ endif # VIRTUALIZATION
+-- 
+1.9.0
+
+
+From b3fe07144652bdb9d660a88139824c1484d42bcb Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 26 Aug 2015 21:21:50 +0200
+Subject: [PATCH 10/26] spi: fsl-(e)spi: migrate to using devm_ functions to
+ simplify cleanup
+
+Migrate fsl-espi and fsl-spi to using the managed devm_ functions
+for resource handling. This simplifies the cleanup.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 4178b6b1b595003cd6e04711b449797a582e44f5)
+---
+ drivers/spi/spi-fsl-espi.c | 20 +++++---------------
+ drivers/spi/spi-fsl-lib.c  |  4 ----
+ drivers/spi/spi-fsl-spi.c  | 21 ++++++++-------------
+ 3 files changed, 13 insertions(+), 32 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index d3f05a0..f35eb2c 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -604,11 +604,6 @@ static irqreturn_t fsl_espi_irq(s32 irq, void *context_data)
+ 	return ret;
+ }
+ 
+-static void fsl_espi_remove(struct mpc8xxx_spi *mspi)
+-{
+-	iounmap(mspi->reg_base);
+-}
+-
+ static int fsl_espi_suspend(struct spi_master *master)
+ {
+ 	struct mpc8xxx_spi *mpc8xxx_spi;
+@@ -671,9 +666,8 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 	master->unprepare_transfer_hardware = fsl_espi_suspend;
+ 
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+-	mpc8xxx_spi->spi_remove = fsl_espi_remove;
+ 
+-	mpc8xxx_spi->reg_base = ioremap(mem->start, resource_size(mem));
++	mpc8xxx_spi->reg_base = devm_ioremap_resource(dev, mem);
+ 	if (!mpc8xxx_spi->reg_base) {
+ 		ret = -ENOMEM;
+ 		goto err_probe;
+@@ -682,10 +676,10 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 	reg_base = mpc8xxx_spi->reg_base;
+ 
+ 	/* Register for SPI Interrupt */
+-	ret = request_irq(mpc8xxx_spi->irq, fsl_espi_irq,
++	ret = devm_request_irq(dev, mpc8xxx_spi->irq, fsl_espi_irq,
+ 			  0, "fsl_espi", mpc8xxx_spi);
+ 	if (ret)
+-		goto free_irq;
++		goto err_probe;
+ 
+ 	if (mpc8xxx_spi->flags & SPI_QE_CPU_MODE) {
+ 		mpc8xxx_spi->rx_shift = 16;
+@@ -731,18 +725,14 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+ 
+-	ret = spi_register_master(master);
++	ret = devm_spi_register_master(dev, master);
+ 	if (ret < 0)
+-		goto unreg_master;
++		goto err_probe;
+ 
+ 	dev_info(dev, "at 0x%p (irq = %d)\n", reg_base, mpc8xxx_spi->irq);
+ 
+ 	return master;
+ 
+-unreg_master:
+-	free_irq(mpc8xxx_spi->irq, mpc8xxx_spi);
+-free_irq:
+-	iounmap(mpc8xxx_spi->reg_base);
+ err_probe:
+ 	spi_master_put(master);
+ err:
+diff --git a/drivers/spi/spi-fsl-lib.c b/drivers/spi/spi-fsl-lib.c
+index cb35d2f..e50fd06 100644
+--- a/drivers/spi/spi-fsl-lib.c
++++ b/drivers/spi/spi-fsl-lib.c
+@@ -122,10 +122,6 @@ int mpc8xxx_spi_remove(struct device *dev)
+ 	master = dev_get_drvdata(dev);
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+ 
+-	spi_unregister_master(master);
+-
+-	free_irq(mpc8xxx_spi->irq, mpc8xxx_spi);
+-
+ 	if (mpc8xxx_spi->spi_remove)
+ 		mpc8xxx_spi->spi_remove(mpc8xxx_spi);
+ 
+diff --git a/drivers/spi/spi-fsl-spi.c b/drivers/spi/spi-fsl-spi.c
+index 60c5907..8bfbe9e 100644
+--- a/drivers/spi/spi-fsl-spi.c
++++ b/drivers/spi/spi-fsl-spi.c
+@@ -561,7 +561,6 @@ static irqreturn_t fsl_spi_irq(s32 irq, void *context_data)
+ 
+ static void fsl_spi_remove(struct mpc8xxx_spi *mspi)
+ {
+-	iounmap(mspi->reg_base);
+ 	fsl_spi_cpm_free(mspi);
+ }
+ 
+@@ -639,10 +638,10 @@ static struct spi_master * fsl_spi_probe(struct device *dev,
+ 	if (ret)
+ 		goto err_cpm_init;
+ 
+-	mpc8xxx_spi->reg_base = ioremap(mem->start, resource_size(mem));
++	mpc8xxx_spi->reg_base = devm_ioremap_resource(dev, mem);
+ 	if (mpc8xxx_spi->reg_base == NULL) {
+ 		ret = -ENOMEM;
+-		goto err_ioremap;
++		goto err_probe;
+ 	}
+ 
+ 	if (mpc8xxx_spi->type == TYPE_GRLIB)
+@@ -661,11 +660,11 @@ static struct spi_master * fsl_spi_probe(struct device *dev,
+ 					&mpc8xxx_spi->tx_shift, 8, 1);
+ 
+ 	/* Register for SPI Interrupt */
+-	ret = request_irq(mpc8xxx_spi->irq, fsl_spi_irq,
+-			  0, "fsl_spi", mpc8xxx_spi);
++	ret = devm_request_irq(dev, mpc8xxx_spi->irq, fsl_spi_irq,
++			       0, "fsl_spi", mpc8xxx_spi);
+ 
+ 	if (ret != 0)
+-		goto free_irq;
++		goto err_probe;
+ 
+ 	reg_base = mpc8xxx_spi->reg_base;
+ 
+@@ -686,20 +685,16 @@ static struct spi_master * fsl_spi_probe(struct device *dev,
+ 
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+ 
+-	ret = spi_register_master(master);
++	ret = devm_spi_register_master(dev, master);
+ 	if (ret < 0)
+-		goto unreg_master;
++		goto err_probe;
+ 
+ 	dev_info(dev, "at 0x%p (irq = %d), %s mode\n", reg_base,
+ 		 mpc8xxx_spi->irq, mpc8xxx_spi_strmode(mpc8xxx_spi->flags));
+ 
+ 	return master;
+ 
+-unreg_master:
+-	free_irq(mpc8xxx_spi->irq, mpc8xxx_spi);
+-free_irq:
+-	iounmap(mpc8xxx_spi->reg_base);
+-err_ioremap:
++err_probe:
+ 	fsl_spi_cpm_free(mpc8xxx_spi);
+ err_cpm_init:
+ 	spi_master_put(master);
+-- 
+1.9.0
+
+
+From a01f24462f238ee7fc0adcd1070db730fc0cd7b2 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 26 Aug 2015 21:21:53 +0200
+Subject: [PATCH 11/26] spi: fsl-(e)spi: simplify cleanup code
+
+Now that most cleanup is done automatically the remove functions
+can be significantly simplified.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 3c5395b66ff69d8d568d0b9ff8b1077e044def5b)
+---
+ drivers/spi/spi-fsl-espi.c |  6 ------
+ drivers/spi/spi-fsl-lib.c  | 15 ---------------
+ drivers/spi/spi-fsl-lib.h  |  3 ---
+ drivers/spi/spi-fsl-spi.c  | 18 +++++++-----------
+ 4 files changed, 7 insertions(+), 35 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index f35eb2c..fe54e57 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -797,11 +797,6 @@ err:
+ 	return ret;
+ }
+ 
+-static int of_fsl_espi_remove(struct platform_device *dev)
+-{
+-	return mpc8xxx_spi_remove(&dev->dev);
+-}
+-
+ #ifdef CONFIG_PM_SLEEP
+ static int of_fsl_espi_suspend(struct device *dev)
+ {
+@@ -865,7 +860,6 @@ static struct platform_driver fsl_espi_driver = {
+ 		.pm = &espi_pm,
+ 	},
+ 	.probe		= of_fsl_espi_probe,
+-	.remove		= of_fsl_espi_remove,
+ };
+ module_platform_driver(fsl_espi_driver);
+ 
+diff --git a/drivers/spi/spi-fsl-lib.c b/drivers/spi/spi-fsl-lib.c
+index e50fd06..1e43412 100644
+--- a/drivers/spi/spi-fsl-lib.c
++++ b/drivers/spi/spi-fsl-lib.c
+@@ -114,21 +114,6 @@ void mpc8xxx_spi_probe(struct device *dev, struct resource *mem,
+ }
+ EXPORT_SYMBOL_GPL(mpc8xxx_spi_probe);
+ 
+-int mpc8xxx_spi_remove(struct device *dev)
+-{
+-	struct mpc8xxx_spi *mpc8xxx_spi;
+-	struct spi_master *master;
+-
+-	master = dev_get_drvdata(dev);
+-	mpc8xxx_spi = spi_master_get_devdata(master);
+-
+-	if (mpc8xxx_spi->spi_remove)
+-		mpc8xxx_spi->spi_remove(mpc8xxx_spi);
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(mpc8xxx_spi_remove);
+-
+ int of_mpc8xxx_spi_probe(struct platform_device *ofdev)
+ {
+ 	struct device *dev = &ofdev->dev;
+diff --git a/drivers/spi/spi-fsl-lib.h b/drivers/spi/spi-fsl-lib.h
+index 1326a39..84f5dcb 100644
+--- a/drivers/spi/spi-fsl-lib.h
++++ b/drivers/spi/spi-fsl-lib.h
+@@ -54,9 +54,6 @@ struct mpc8xxx_spi {
+ 	void (*get_rx) (u32 rx_data, struct mpc8xxx_spi *);
+ 	u32(*get_tx) (struct mpc8xxx_spi *);
+ 
+-	/* hooks for different controller driver */
+-	void (*spi_remove) (struct mpc8xxx_spi *mspi);
+-
+ 	unsigned int count;
+ 	unsigned int irq;
+ 
+diff --git a/drivers/spi/spi-fsl-spi.c b/drivers/spi/spi-fsl-spi.c
+index 8bfbe9e..17a9a87 100644
+--- a/drivers/spi/spi-fsl-spi.c
++++ b/drivers/spi/spi-fsl-spi.c
+@@ -559,11 +559,6 @@ static irqreturn_t fsl_spi_irq(s32 irq, void *context_data)
+ 	return ret;
+ }
+ 
+-static void fsl_spi_remove(struct mpc8xxx_spi *mspi)
+-{
+-	fsl_spi_cpm_free(mspi);
+-}
+-
+ static void fsl_spi_grlib_cs_control(struct spi_device *spi, bool on)
+ {
+ 	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(spi->master);
+@@ -630,7 +625,6 @@ static struct spi_master * fsl_spi_probe(struct device *dev,
+ 	master->transfer_one_message = fsl_spi_do_one_msg;
+ 
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+-	mpc8xxx_spi->spi_remove = fsl_spi_remove;
+ 	mpc8xxx_spi->max_bits_per_word = 32;
+ 	mpc8xxx_spi->type = fsl_spi_get_type(dev);
+ 
+@@ -861,11 +855,8 @@ static int of_fsl_spi_remove(struct platform_device *ofdev)
+ {
+ 	struct spi_master *master = platform_get_drvdata(ofdev);
+ 	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(master);
+-	int ret;
+ 
+-	ret = mpc8xxx_spi_remove(&ofdev->dev);
+-	if (ret)
+-		return ret;
++	fsl_spi_cpm_free(mpc8xxx_spi);
+ 	if (mpc8xxx_spi->type == TYPE_FSL)
+ 		of_fsl_spi_free_chipselects(&ofdev->dev);
+ 	return 0;
+@@ -911,7 +902,12 @@ static int plat_mpc8xxx_spi_probe(struct platform_device *pdev)
+ 
+ static int plat_mpc8xxx_spi_remove(struct platform_device *pdev)
+ {
+-	return mpc8xxx_spi_remove(&pdev->dev);
++	struct spi_master *master = platform_get_drvdata(pdev);
++	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(master);
++
++	fsl_spi_cpm_free(mpc8xxx_spi);
++
++	return 0;
+ }
+ 
+ MODULE_ALIAS("platform:mpc8xxx_spi");
+-- 
+1.9.0
+
+
+From ce9f37291dd8b87f12b036ec49b20e9cd102eda2 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 26 Aug 2015 21:21:55 +0200
+Subject: [PATCH 12/26] spi: fsl-espi: add runtime PM
+
+Add runtime PM and use autosuspend instead of suspending the
+SPI controller after each transfer.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit e9abb4db8d108624c293f06dce06b2978e626a13)
+---
+ drivers/spi/spi-fsl-espi.c | 71 +++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 54 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index fe54e57..db82c87 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -21,6 +21,7 @@
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/spi/spi.h>
++#include <linux/pm_runtime.h>
+ #include <sysdev/fsl_soc.h>
+ 
+ #include "spi-fsl-lib.h"
+@@ -85,6 +86,8 @@ struct fsl_espi_transfer {
+ #define SPCOM_TRANLEN(x)	((x) << 0)
+ #define	SPCOM_TRANLEN_MAX	0xFFFF	/* Max transaction length */
+ 
++#define AUTOSUSPEND_TIMEOUT 2000
++
+ static void fsl_espi_change_mode(struct spi_device *spi)
+ {
+ 	struct mpc8xxx_spi *mspi = spi_master_get_devdata(spi->master);
+@@ -485,6 +488,8 @@ static int fsl_espi_setup(struct spi_device *spi)
+ 	mpc8xxx_spi = spi_master_get_devdata(spi->master);
+ 	reg_base = mpc8xxx_spi->reg_base;
+ 
++	pm_runtime_get_sync(mpc8xxx_spi->dev);
++
+ 	hw_mode = cs->hw_mode; /* Save original settings */
+ 	cs->hw_mode = mpc8xxx_spi_read_reg(
+ 			&reg_base->csmode[spi->chip_select]);
+@@ -507,6 +512,10 @@ static int fsl_espi_setup(struct spi_device *spi)
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, loop_mode);
+ 
+ 	retval = fsl_espi_setup_transfer(spi, NULL);
++
++	pm_runtime_mark_last_busy(mpc8xxx_spi->dev);
++	pm_runtime_put_autosuspend(mpc8xxx_spi->dev);
++
+ 	if (retval < 0) {
+ 		cs->hw_mode = hw_mode; /* Restore settings */
+ 		return retval;
+@@ -604,15 +613,14 @@ static irqreturn_t fsl_espi_irq(s32 irq, void *context_data)
+ 	return ret;
+ }
+ 
+-static int fsl_espi_suspend(struct spi_master *master)
++#ifdef CONFIG_PM
++static int fsl_espi_runtime_suspend(struct device *dev)
+ {
+-	struct mpc8xxx_spi *mpc8xxx_spi;
+-	struct fsl_espi_reg *reg_base;
++	struct spi_master *master = dev_get_drvdata(dev);
++	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(master);
++	struct fsl_espi_reg *reg_base = mpc8xxx_spi->reg_base;
+ 	u32 regval;
+ 
+-	mpc8xxx_spi = spi_master_get_devdata(master);
+-	reg_base = mpc8xxx_spi->reg_base;
+-
+ 	regval = mpc8xxx_spi_read_reg(&reg_base->mode);
+ 	regval &= ~SPMODE_ENABLE;
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+@@ -620,21 +628,20 @@ static int fsl_espi_suspend(struct spi_master *master)
+ 	return 0;
+ }
+ 
+-static int fsl_espi_resume(struct spi_master *master)
++static int fsl_espi_runtime_resume(struct device *dev)
+ {
+-	struct mpc8xxx_spi *mpc8xxx_spi;
+-	struct fsl_espi_reg *reg_base;
++	struct spi_master *master = dev_get_drvdata(dev);
++	struct mpc8xxx_spi *mpc8xxx_spi = spi_master_get_devdata(master);
++	struct fsl_espi_reg *reg_base = mpc8xxx_spi->reg_base;
+ 	u32 regval;
+ 
+-	mpc8xxx_spi = spi_master_get_devdata(master);
+-	reg_base = mpc8xxx_spi->reg_base;
+-
+ 	regval = mpc8xxx_spi_read_reg(&reg_base->mode);
+ 	regval |= SPMODE_ENABLE;
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+ 
+ 	return 0;
+ }
++#endif
+ 
+ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 		struct resource *mem, unsigned int irq)
+@@ -662,8 +669,7 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 	master->setup = fsl_espi_setup;
+ 	master->cleanup = fsl_espi_cleanup;
+ 	master->transfer_one_message = fsl_espi_do_one_msg;
+-	master->prepare_transfer_hardware = fsl_espi_resume;
+-	master->unprepare_transfer_hardware = fsl_espi_suspend;
++	master->auto_runtime_pm = true;
+ 
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+ 
+@@ -725,14 +731,27 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+ 
++	pm_runtime_set_autosuspend_delay(dev, AUTOSUSPEND_TIMEOUT);
++	pm_runtime_use_autosuspend(dev);
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_get_sync(dev);
++
+ 	ret = devm_spi_register_master(dev, master);
+ 	if (ret < 0)
+-		goto err_probe;
++		goto err_pm;
+ 
+ 	dev_info(dev, "at 0x%p (irq = %d)\n", reg_base, mpc8xxx_spi->irq);
+ 
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
+ 	return master;
+ 
++err_pm:
++	pm_runtime_put_noidle(dev);
++	pm_runtime_disable(dev);
++	pm_runtime_set_suspended(dev);
+ err_probe:
+ 	spi_master_put(master);
+ err:
+@@ -797,6 +816,13 @@ err:
+ 	return ret;
+ }
+ 
++static int of_fsl_espi_remove(struct platform_device *dev)
++{
++	pm_runtime_disable(&dev->dev);
++
++	return 0;
++}
++
+ #ifdef CONFIG_PM_SLEEP
+ static int of_fsl_espi_suspend(struct device *dev)
+ {
+@@ -809,7 +835,11 @@ static int of_fsl_espi_suspend(struct device *dev)
+ 		return ret;
+ 	}
+ 
+-	return fsl_espi_suspend(master);
++	ret = pm_runtime_force_suspend(dev);
++	if (ret < 0)
++		return ret;
++
++	return 0;
+ }
+ 
+ static int of_fsl_espi_resume(struct device *dev)
+@@ -819,7 +849,7 @@ static int of_fsl_espi_resume(struct device *dev)
+ 	struct mpc8xxx_spi *mpc8xxx_spi;
+ 	struct fsl_espi_reg *reg_base;
+ 	u32 regval;
+-	int i;
++	int i, ret;
+ 
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+ 	reg_base = mpc8xxx_spi->reg_base;
+@@ -839,11 +869,17 @@ static int of_fsl_espi_resume(struct device *dev)
+ 
+ 	mpc8xxx_spi_write_reg(&reg_base->mode, regval);
+ 
++	ret = pm_runtime_force_resume(dev);
++	if (ret < 0)
++		return ret;
++
+ 	return spi_master_resume(master);
+ }
+ #endif /* CONFIG_PM_SLEEP */
+ 
+ static const struct dev_pm_ops espi_pm = {
++	SET_RUNTIME_PM_OPS(fsl_espi_runtime_suspend,
++			   fsl_espi_runtime_resume, NULL)
+ 	SET_SYSTEM_SLEEP_PM_OPS(of_fsl_espi_suspend, of_fsl_espi_resume)
+ };
+ 
+@@ -860,6 +896,7 @@ static struct platform_driver fsl_espi_driver = {
+ 		.pm = &espi_pm,
+ 	},
+ 	.probe		= of_fsl_espi_probe,
++	.remove		= of_fsl_espi_remove,
+ };
+ module_platform_driver(fsl_espi_driver);
+ 
+-- 
+1.9.0
+
+
+From 58f5f20c58e1883c56623fce1f5cb14a5543181e Mon Sep 17 00:00:00 2001
+From: Axel Lin <axel.lin@ingics.com>
+Date: Sun, 30 Aug 2015 18:35:51 +0800
+Subject: [PATCH 13/26] spi: fsl-(e)spi: Fix checking return value of
+ devm_ioremap_resource
+
+devm_ioremap_resource() returns ERR_PTR on error.
+
+Signed-off-by: Axel Lin <axel.lin@ingics.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 37c5db7938093cada165146ee99bd57c97baf6a3)
+---
+ drivers/spi/spi-fsl-espi.c | 4 ++--
+ drivers/spi/spi-fsl-spi.c  | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index db82c87..c27124a 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -674,8 +674,8 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+ 
+ 	mpc8xxx_spi->reg_base = devm_ioremap_resource(dev, mem);
+-	if (!mpc8xxx_spi->reg_base) {
+-		ret = -ENOMEM;
++	if (IS_ERR(mpc8xxx_spi->reg_base)) {
++		ret = PTR_ERR(mpc8xxx_spi->reg_base);
+ 		goto err_probe;
+ 	}
+ 
+diff --git a/drivers/spi/spi-fsl-spi.c b/drivers/spi/spi-fsl-spi.c
+index 17a9a87..8b290d9 100644
+--- a/drivers/spi/spi-fsl-spi.c
++++ b/drivers/spi/spi-fsl-spi.c
+@@ -633,8 +633,8 @@ static struct spi_master * fsl_spi_probe(struct device *dev,
+ 		goto err_cpm_init;
+ 
+ 	mpc8xxx_spi->reg_base = devm_ioremap_resource(dev, mem);
+-	if (mpc8xxx_spi->reg_base == NULL) {
+-		ret = -ENOMEM;
++	if (IS_ERR(mpc8xxx_spi->reg_base)) {
++		ret = PTR_ERR(mpc8xxx_spi->reg_base);
+ 		goto err_probe;
+ 	}
+ 
+-- 
+1.9.0
+
+
+From 5ee0263a0c35e9fca7f6933f37e27b2ed87683ae Mon Sep 17 00:00:00 2001
+From: Jarkko Nikula <jarkko.nikula@linux.intel.com>
+Date: Tue, 15 Sep 2015 16:26:25 +0300
+Subject: [PATCH 14/26] spi: spi-fsl-dspi: Remove duplicated register write
+
+SPI core makes sure that transfer speed is always set so code here writes
+the same register with the same value twice. Code has been doing this from
+the beginning.
+
+This looks to me some sort of copy paste error so I'm removing the second
+write. If this is not the case we can bring it back with a comment.
+
+Signed-off-by: Jarkko Nikula <jarkko.nikula@linux.intel.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit fa14e47fc409390f1be92da679a365faef187937)
+---
+ drivers/spi/spi-fsl-dspi.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-dspi.c b/drivers/spi/spi-fsl-dspi.c
+index 86bcdd6..59a1143 100644
+--- a/drivers/spi/spi-fsl-dspi.c
++++ b/drivers/spi/spi-fsl-dspi.c
+@@ -409,9 +409,6 @@ static int dspi_transfer_one_message(struct spi_master *master,
+ 				SPI_MCR_CLR_TXF | SPI_MCR_CLR_RXF);
+ 		regmap_write(dspi->regmap, SPI_CTAR(dspi->cs),
+ 				dspi->cur_chip->ctar_val);
+-		if (transfer->speed_hz)
+-			regmap_write(dspi->regmap, SPI_CTAR(dspi->cs),
+-					dspi->cur_chip->ctar_val);
+ 
+ 		trans_mode = dspi->devtype_data->trans_mode;
+ 		switch (trans_mode) {
+-- 
+1.9.0
+
+
+From defe8efde6ad03d124dbbc4b91925c3bbdafdbdb Mon Sep 17 00:00:00 2001
+From: Bhuvanchandra DV <bhuvanchandra.dv@toradex.com>
+Date: Thu, 10 Dec 2015 11:25:30 +0530
+Subject: [PATCH 15/26] spi-fsl-dspi: Fix CTAR Register access
+
+DSPI instances in Vybrid have a different amount of chip selects
+and CTARs (Clock and transfer Attributes Register). In case of
+DSPI1 we only have 2 CTAR registers and 4 CS. In present driver
+implementation CTAR offset is derived from CS instance which will
+lead to out of bound access if chip select instance is greater than
+CTAR register instance, hence use single CTAR0 register for all CS
+instances. Since we write the CTAR register anyway before each access,
+there is no value in using the additional CTAR registers. Also one
+should not program a value in CTAS for a CTAR register that is not
+present, hence configure CTAS to use CTAR0.
+
+Signed-off-by: Bhuvanchandra DV <bhuvanchandra.dv@toradex.com>
+Acked-by: Stefan Agner <stefan@agner.ch>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit ef22d1604c622d24ded69f40d40c3c6d83f71156)
+---
+ drivers/spi/spi-fsl-dspi.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-dspi.c b/drivers/spi/spi-fsl-dspi.c
+index 59a1143..39412c9 100644
+--- a/drivers/spi/spi-fsl-dspi.c
++++ b/drivers/spi/spi-fsl-dspi.c
+@@ -167,7 +167,7 @@ static inline int is_double_byte_mode(struct fsl_dspi *dspi)
+ {
+ 	unsigned int val;
+ 
+-	regmap_read(dspi->regmap, SPI_CTAR(dspi->cs), &val);
++	regmap_read(dspi->regmap, SPI_CTAR(0), &val);
+ 
+ 	return ((val & SPI_FRAME_BITS_MASK) == SPI_FRAME_BITS(8)) ? 0 : 1;
+ }
+@@ -257,7 +257,7 @@ static u32 dspi_data_to_pushr(struct fsl_dspi *dspi, int tx_word)
+ 
+ 	return	SPI_PUSHR_TXDATA(d16) |
+ 		SPI_PUSHR_PCS(dspi->cs) |
+-		SPI_PUSHR_CTAS(dspi->cs) |
++		SPI_PUSHR_CTAS(0) |
+ 		SPI_PUSHR_CONT;
+ }
+ 
+@@ -290,7 +290,7 @@ static int dspi_eoq_write(struct fsl_dspi *dspi)
+ 		 */
+ 		if (tx_word && (dspi->len == 1)) {
+ 			dspi->dataflags |= TRAN_STATE_WORD_ODD_NUM;
+-			regmap_update_bits(dspi->regmap, SPI_CTAR(dspi->cs),
++			regmap_update_bits(dspi->regmap, SPI_CTAR(0),
+ 					SPI_FRAME_BITS_MASK, SPI_FRAME_BITS(8));
+ 			tx_word = 0;
+ 		}
+@@ -339,7 +339,7 @@ static int dspi_tcfq_write(struct fsl_dspi *dspi)
+ 
+ 	if (tx_word && (dspi->len == 1)) {
+ 		dspi->dataflags |= TRAN_STATE_WORD_ODD_NUM;
+-		regmap_update_bits(dspi->regmap, SPI_CTAR(dspi->cs),
++		regmap_update_bits(dspi->regmap, SPI_CTAR(0),
+ 				SPI_FRAME_BITS_MASK, SPI_FRAME_BITS(8));
+ 		tx_word = 0;
+ 	}
+@@ -407,7 +407,7 @@ static int dspi_transfer_one_message(struct spi_master *master,
+ 		regmap_update_bits(dspi->regmap, SPI_MCR,
+ 				SPI_MCR_CLR_TXF | SPI_MCR_CLR_RXF,
+ 				SPI_MCR_CLR_TXF | SPI_MCR_CLR_RXF);
+-		regmap_write(dspi->regmap, SPI_CTAR(dspi->cs),
++		regmap_write(dspi->regmap, SPI_CTAR(0),
+ 				dspi->cur_chip->ctar_val);
+ 
+ 		trans_mode = dspi->devtype_data->trans_mode;
+@@ -566,7 +566,7 @@ static irqreturn_t dspi_interrupt(int irq, void *dev_id)
+ 		if (!dspi->len) {
+ 			if (dspi->dataflags & TRAN_STATE_WORD_ODD_NUM) {
+ 				regmap_update_bits(dspi->regmap,
+-						   SPI_CTAR(dspi->cs),
++						   SPI_CTAR(0),
+ 						   SPI_FRAME_BITS_MASK,
+ 						   SPI_FRAME_BITS(16));
+ 				dspi->dataflags &= ~TRAN_STATE_WORD_ODD_NUM;
+-- 
+1.9.0
+
+
+From 2d3fc00e80fb01db629b773aac9e040b23ac232c Mon Sep 17 00:00:00 2001
+From: Michal Suchanek <hramrach@gmail.com>
+Date: Wed, 2 Dec 2015 10:38:21 +0000
+Subject: [PATCH 16/26] spi: fsl-espi: expose maximum transfer size limit
+
+The fsl-espi hardware can trasfer at most 64K data so report teh
+limitation.
+
+Based on patch by Heiner Kallweit <hkallweit1@gmail.com>
+
+CC: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Michal Suchanek <hramrach@gmail.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit b541eef125fa3ae0df84572459af4e7084cb6343)
+---
+ drivers/spi/spi-fsl-espi.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index c27124a..7fd6a4c 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -643,6 +643,11 @@ static int fsl_espi_runtime_resume(struct device *dev)
+ }
+ #endif
+ 
++static size_t fsl_espi_max_transfer_size(struct spi_device *spi)
++{
++	return SPCOM_TRANLEN_MAX;
++}
++
+ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 		struct resource *mem, unsigned int irq)
+ {
+@@ -670,6 +675,7 @@ static struct spi_master * fsl_espi_probe(struct device *dev,
+ 	master->cleanup = fsl_espi_cleanup;
+ 	master->transfer_one_message = fsl_espi_do_one_msg;
+ 	master->auto_runtime_pm = true;
++	master->max_transfer_size = fsl_espi_max_transfer_size;
+ 
+ 	mpc8xxx_spi = spi_master_get_devdata(master);
+ 
+-- 
+1.9.0
+
+
+From 34377d0f0ac7898225e6b882cc9b4eab7c44d1ed Mon Sep 17 00:00:00 2001
+From: Hou Zhiqiang <B48286@freescale.com>
+Date: Fri, 22 Jan 2016 18:58:26 +0800
+Subject: [PATCH 17/26] spi/fsl-espi: Correct the maximum transaction length
+
+The maximum length during one transcation is 64KiB.
+
+Signed-off-by: Hou Zhiqiang <B48286@freescale.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 5cfa1e4e0deced0cccedb4b30facb8a8e68e209b)
+---
+ drivers/spi/spi-fsl-espi.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index 7fd6a4c..7cb0c19 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -84,7 +84,7 @@ struct fsl_espi_transfer {
+ /* SPCOM register values */
+ #define SPCOM_CS(x)		((x) << 30)
+ #define SPCOM_TRANLEN(x)	((x) << 0)
+-#define	SPCOM_TRANLEN_MAX	0xFFFF	/* Max transaction length */
++#define	SPCOM_TRANLEN_MAX	0x10000	/* Max transaction length */
+ 
+ #define AUTOSUSPEND_TIMEOUT 2000
+ 
+@@ -233,7 +233,7 @@ static int fsl_espi_bufs(struct spi_device *spi, struct spi_transfer *t)
+ 	reinit_completion(&mpc8xxx_spi->done);
+ 
+ 	/* Set SPCOM[CS] and SPCOM[TRANLEN] field */
+-	if ((t->len - 1) > SPCOM_TRANLEN_MAX) {
++	if (t->len > SPCOM_TRANLEN_MAX) {
+ 		dev_err(mpc8xxx_spi->dev, "Transaction length (%d)"
+ 				" beyond the SPCOM[TRANLEN] field\n", t->len);
+ 		return -EINVAL;
+-- 
+1.9.0
+
+
+From 3c052267d19275ebca0816bb6936a2d02653cfe4 Mon Sep 17 00:00:00 2001
+From: Yuan Yao <yao.yuan@freescale.com>
+Date: Wed, 28 Oct 2015 17:41:59 +0800
+Subject: [PATCH 18/26] spi: Add DSPI support for layerscape family
+
+LS1043a and LS2080A in the Layerscape family also support DSPI, make
+DSPI selectable for these hardwares.
+
+Signed-off-by: Yuan Yao <yao.yuan@freescale.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 5a60adafb95263d63dfaaf7168680c4b7e50b370)
+---
+ drivers/spi/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
+index b0f30fb..80e0490 100644
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -304,7 +304,7 @@ config SPI_FSL_SPI
+ config SPI_FSL_DSPI
+ 	tristate "Freescale DSPI controller"
+ 	select REGMAP_MMIO
+-	depends on SOC_VF610 || SOC_LS1021A || COMPILE_TEST
++	depends on SOC_VF610 || SOC_LS1021A || ARCH_LAYERSCAPE || COMPILE_TEST
+ 	help
+ 	  This enables support for the Freescale DSPI controller in master
+ 	  mode. VF610 platform uses the controller.
+-- 
+1.9.0
+
+
+From 98743fe82e7b43c74d051ed2639d5c246e7aeb3d Mon Sep 17 00:00:00 2001
+From: Bhuvanchandra DV <bhuvanchandra.dv@toradex.com>
+Date: Tue, 22 Mar 2016 01:41:52 +0530
+Subject: [PATCH 19/26] spi: fsl-dspi: Set max_speed_hz for master
+
+Calculate and update max speed from bus clock for SoCs
+using DSPI IP.
+
+The bus clock factor's are taken from the data sheets
+of respective SoCs.
+
+Signed-off-by: Bhuvanchandra DV <bhuvanchandra.dv@toradex.com>
+Acked-by: Stefan Agner <stefan@agner.ch>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 9419b2006cf47c75985ea51d36ddc51346d29efd)
+---
+ drivers/spi/spi-fsl-dspi.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/spi/spi-fsl-dspi.c b/drivers/spi/spi-fsl-dspi.c
+index 39412c9..559ed70 100644
+--- a/drivers/spi/spi-fsl-dspi.c
++++ b/drivers/spi/spi-fsl-dspi.c
+@@ -121,18 +121,22 @@ enum dspi_trans_mode {
+ 
+ struct fsl_dspi_devtype_data {
+ 	enum dspi_trans_mode trans_mode;
++	u8 max_clock_factor;
+ };
+ 
+ static const struct fsl_dspi_devtype_data vf610_data = {
+ 	.trans_mode = DSPI_EOQ_MODE,
++	.max_clock_factor = 2,
+ };
+ 
+ static const struct fsl_dspi_devtype_data ls1021a_v1_data = {
+ 	.trans_mode = DSPI_TCFQ_MODE,
++	.max_clock_factor = 8,
+ };
+ 
+ static const struct fsl_dspi_devtype_data ls2085a_data = {
+ 	.trans_mode = DSPI_TCFQ_MODE,
++	.max_clock_factor = 8,
+ };
+ 
+ struct fsl_dspi {
+@@ -726,6 +730,9 @@ static int dspi_probe(struct platform_device *pdev)
+ 	}
+ 	clk_prepare_enable(dspi->clk);
+ 
++	master->max_speed_hz =
++		clk_get_rate(dspi->clk) / dspi->devtype_data->max_clock_factor;
++
+ 	init_waitqueue_head(&dspi->waitq);
+ 	platform_set_drvdata(pdev, master);
+ 
+-- 
+1.9.0
+
+
+From cd9e6fdb67b7ba0a2f77439a2ced1acfa701b414 Mon Sep 17 00:00:00 2001
+From: Nobuteru Hayashi <hayashi.nbb@ncos.nec.co.jp>
+Date: Fri, 18 Mar 2016 11:35:21 +0000
+Subject: [PATCH 20/26] spi/fsl-espi: Don't spin forever on SPIE_RXCNT
+
+Infinite loop on SPIE_RXCNT occurred.
+
+while (SPIE_RXCNT(events) < min(4, mspi->len)) {
+        cpu_relax();
+        events = mpc8xxx_spi_read_reg(&reg_base->event);
+}
+
+We met a soft lockup at fsl_espi_cpu_irq() because of this.
+
+Fix it by using spin_event_timeout() so that fsl_espi_cpu_irq()
+can break loop with timeouts dmesg.
+
+Signed-off-by: Nobuteru Hayashi <hayashi.nbb@ncos.nec.co.jp>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit a12ddd60ed0a88c3bb83a8d4c07762e41620bf8c)
+---
+ drivers/spi/spi-fsl-espi.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index 7cb0c19..5d7fb81 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -539,11 +539,18 @@ void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
+ 	if (events & SPIE_NE) {
+ 		u32 rx_data, tmp;
+ 		u8 rx_data_8;
++		int ret;
+ 
+ 		/* Spin until RX is done */
+-		while (SPIE_RXCNT(events) < min(4, mspi->len)) {
+-			cpu_relax();
+-			events = mpc8xxx_spi_read_reg(&reg_base->event);
++		if (SPIE_RXCNT(events) < min(4, mspi->len)) {
++			ret = spin_event_timeout(
++				!(SPIE_RXCNT(events =
++				mpc8xxx_spi_read_reg(&reg_base->event)) <
++						min(4, mspi->len)),
++						10000, 0); /* 10 msec */
++			if (!ret)
++				dev_err(mspi->dev,
++					 "tired waiting for SPIE_RXCNT\n");
+ 		}
+ 
+ 		if (mspi->len >= 4) {
+-- 
+1.9.0
+
+
+From 6fd5c2b76410b0289bf76423c9a724f454063a8a Mon Sep 17 00:00:00 2001
+From: Nobuteru Hayashi <hayashi.nbb@ncos.nec.co.jp>
+Date: Fri, 18 Mar 2016 11:35:21 +0000
+Subject: [PATCH 21/26] spi/fsl-espi: Don't wait transaction completion forever
+
+Because the eSPI driver uses wait_for_completion(), any stuck-able
+phenomenon at half-way transaction progress made worker task hang up.
+This phenomenon is perhaps caused by eSPI device errata which seems not
+to be published from vendor site yet.
+
+Anyway, we fix hang task by using fixed 2 seconds timeout
+that is our preferred value for eSPI maximum transaction size.
+
+It seems to be better that eSPI driver can detect this stuck and
+report error (EMSGSIZE) to the upper device driver because
+the upper device driver can decide to retry or recover.
+
+Signed-off-by: Nobuteru Hayashi <hayashi.nbb@ncos.nec.co.jp>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit aa70e567c4f0eeb849c6bcef3685bdf1fc3ca19d)
+---
+ drivers/spi/spi-fsl-espi.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index 5d7fb81..64d794b 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -245,7 +245,12 @@ static int fsl_espi_bufs(struct spi_device *spi, struct spi_transfer *t)
+ 	if (ret)
+ 		return ret;
+ 
+-	wait_for_completion(&mpc8xxx_spi->done);
++	/* Won't hang up forever, SPI bus sometimes got lost interrupts... */
++	ret = wait_for_completion_timeout(&mpc8xxx_spi->done, 2 * HZ);
++	if (ret == 0)
++		dev_err(mpc8xxx_spi->dev,
++			"Transaction hanging up (left %d bytes)\n",
++			mpc8xxx_spi->count);
+ 
+ 	/* disable rx ints */
+ 	mpc8xxx_spi_write_reg(&reg_base->mask, 0);
+-- 
+1.9.0
+
+
+From 24368737a502a913757db546d41de7ffe1d9be08 Mon Sep 17 00:00:00 2001
+From: Nobuteru Hayashi <hayashi.nbb@ncos.nec.co.jp>
+Date: Fri, 18 Mar 2016 11:35:21 +0000
+Subject: [PATCH 22/26] spi/fsl-espi: avoid infinite loops on
+ fsl_espi_cpu_irq()
+
+It brought nearly infinite loops, and was possible to be
+occurred only if the SPI transaction total size are not
+alighed with 4. Loops are here at while (tmp--),
+tmp is unsigned, and set it with minus value.
+
+The loops are executed as a result of unexpected RX interrupt
+occurrence after that. This interrupt may be hardware eratta
+and is not fixed.
+
+Fix mspi->len from minus value to 0 and print warning message.
+
+Signed-off-by: Nobuteru Hayashi <hayashi.nbb@ncos.nec.co.jp>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 6319a68011b86fa61dc63e94dc4fb716628037f3)
+---
+ drivers/spi/spi-fsl-espi.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/spi/spi-fsl-espi.c b/drivers/spi/spi-fsl-espi.c
+index 64d794b..8d85a3c 100644
+--- a/drivers/spi/spi-fsl-espi.c
++++ b/drivers/spi/spi-fsl-espi.c
+@@ -544,6 +544,7 @@ void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
+ 	if (events & SPIE_NE) {
+ 		u32 rx_data, tmp;
+ 		u8 rx_data_8;
++		int rx_nr_bytes = 4;
+ 		int ret;
+ 
+ 		/* Spin until RX is done */
+@@ -560,7 +561,14 @@ void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
+ 
+ 		if (mspi->len >= 4) {
+ 			rx_data = mpc8xxx_spi_read_reg(&reg_base->receive);
++		} else if (mspi->len <= 0) {
++			dev_err(mspi->dev,
++				"unexpected RX(SPIE_NE) interrupt occurred,\n"
++				"(local rxlen %d bytes, reg rxlen %d bytes)\n",
++				min(4, mspi->len), SPIE_RXCNT(events));
++			rx_nr_bytes = 0;
+ 		} else {
++			rx_nr_bytes = mspi->len;
+ 			tmp = mspi->len;
+ 			rx_data = 0;
+ 			while (tmp--) {
+@@ -571,7 +579,7 @@ void fsl_espi_cpu_irq(struct mpc8xxx_spi *mspi, u32 events)
+ 			rx_data <<= (4 - mspi->len) * 8;
+ 		}
+ 
+-		mspi->len -= 4;
++		mspi->len -= rx_nr_bytes;
+ 
+ 		if (mspi->rx)
+ 			mspi->get_rx(rx_data, mspi);
+-- 
+1.9.0
+
+
+From c6160f2345216c4f2fed3c3e38a556cbe8d9fe58 Mon Sep 17 00:00:00 2001
+From: Andrey Vostrikov <andrey.vostrikov@cogentembedded.com>
+Date: Tue, 5 Apr 2016 15:33:14 +0300
+Subject: [PATCH 23/26] spi: spi-fsl-dspi: Fix cs_change handling in message
+ transfer
+
+There are use cases when chip select should be triggered between transfers
+in single SPI message. Current implementation does this only on last
+transfer in message ignoring cs_change value provided in current transfer.
+
+Signed-off-by: Andrey Vostrikov <andrey.vostrikov@cogentembedded.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit 92dc20d83adec565378254c0630e839ff5674e14)
+---
+ drivers/spi/spi-fsl-dspi.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/spi/spi-fsl-dspi.c b/drivers/spi/spi-fsl-dspi.c
+index 559ed70..9e9dadb 100644
+--- a/drivers/spi/spi-fsl-dspi.c
++++ b/drivers/spi/spi-fsl-dspi.c
+@@ -389,8 +389,8 @@ static int dspi_transfer_one_message(struct spi_master *master,
+ 		dspi->cur_chip = spi_get_ctldata(spi);
+ 		dspi->cs = spi->chip_select;
+ 		dspi->cs_change = 0;
+-		if (dspi->cur_transfer->transfer_list.next
+-				== &dspi->cur_msg->transfers)
++		if (list_is_last(&dspi->cur_transfer->transfer_list,
++				 &dspi->cur_msg->transfers) || transfer->cs_change)
+ 			dspi->cs_change = 1;
+ 		dspi->void_write_data = dspi->cur_chip->void_write_data;
+ 
+-- 
+1.9.0
+
+
+From 29b9dc531be0b0d3ef6ee51d6f867dbce2afaed3 Mon Sep 17 00:00:00 2001
+From: Yuan Yao <yao.yuan@freescale.com>
+Date: Wed, 9 Mar 2016 18:22:05 +0800
+Subject: [PATCH 24/26] Documentation: fsl: dspi: Add fsl,ls2080a-dspi
+ compatible string
+
+new compatible string: "fsl,ls2080a-dspi".
+
+Signed-off-by: Yuan Yao <yao.yuan@nxp.com>
+Acked-by: Rob Herring <robh@kernel.org>
+Signed-off-by: Shawn Guo <shawnguo@kernel.org>
+(cherry picked from commit 6f1060e338c2cbaf8df7e5a8609f43dfe497954b)
+---
+ Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt b/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
+index fa77f87..1ad0fe3 100644
+--- a/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
++++ b/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
+@@ -1,7 +1,10 @@
+ ARM Freescale DSPI controller
+ 
+ Required properties:
+-- compatible : "fsl,vf610-dspi", "fsl,ls1021a-v1.0-dspi", "fsl,ls2085a-dspi"
++- compatible : "fsl,vf610-dspi", "fsl,ls1021a-v1.0-dspi",
++		"fsl,ls2085a-dspi"
++		or
++		"fsl,ls2080a-dspi" followed by "fsl,ls2085a-dspi"
+ - reg : Offset and length of the register set for the device
+ - interrupts : Should contain SPI controller interrupt
+ - clocks: from common clock binding: handle to dspi clock.
+-- 
+1.9.0
+
+
+From 3044a74cd48d0540705f94ef9e43eb497923432f Mon Sep 17 00:00:00 2001
+From: Yuan Yao <yao.yuan@nxp.com>
+Date: Wed, 27 Apr 2016 16:12:36 +0800
+Subject: [PATCH 25/26] spi: spi-fsl-dspi: Update DT binding documentation
+
+DSPI driver support the register on the controller with big endian
+mode R/W. But not use the regmap API.
+So update the binding documentation for "big-endian".
+
+Signed-off-by: Yuan Yao <yao.yuan@nxp.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+(cherry picked from commit c145344763192042135ef6172b779baaf4a16c1e)
+---
+ Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt b/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
+index 1ad0fe3..ff5893d 100644
+--- a/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
++++ b/Documentation/devicetree/bindings/spi/spi-fsl-dspi.txt
+@@ -16,8 +16,7 @@ Required properties:
+ 
+ Optional property:
+ - big-endian: If present the dspi device's registers are implemented
+-  in big endian mode, otherwise in native mode(same with CPU), for more
+-  detail please see: Documentation/devicetree/bindings/regmap/regmap.txt.
++  in big endian mode.
+ 
+ Optional SPI slave node properties:
+ - fsl,spi-cs-sck-delay: a delay in nanoseconds between activating chip
+-- 
+1.9.0
+
+
+From ae350c6225e9954f538b78727d704ec931de4206 Mon Sep 17 00:00:00 2001
+From: Yuan Yao <yao.yuan@freescale.com>
+Date: Wed, 9 Mar 2016 18:22:06 +0800
+Subject: [PATCH 26/26] arm64: dts: ls2080a: update the DTS for QSPI and DSPI
+ support
+
+Signed-off-by: Yuan Yao <yao.yuan@nxp.com>
+Acked-by: Han xu <han.xu@nxp.com>
+Signed-off-by: Shawn Guo <shawnguo@kernel.org>
+(cherry picked from commit b3f85aba7b87594213e728d13f6c325feea0b66b)
+---
+ arch/arm64/boot/dts/freescale/fsl-ls2080a-qds.dts | 9 ++++++++-
+ arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi    | 4 ++--
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/freescale/fsl-ls2080a-qds.dts b/arch/arm64/boot/dts/freescale/fsl-ls2080a-qds.dts
+index 4cb996d..e8801fa 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-ls2080a-qds.dts
++++ b/arch/arm64/boot/dts/freescale/fsl-ls2080a-qds.dts
+@@ -178,7 +178,14 @@
+ 
+ &qspi {
+ 	status = "okay";
+-	qflash0: s25fl008k {
++	flash0: s25fl256s1@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "st,m25p80";
++		spi-max-frequency = <20000000>;
++		reg = <0>;
++	};
++	flash2: s25fl256s1@2 {
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+ 		compatible = "st,m25p80";
+diff --git a/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi b/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi
+index ba3c98a..8183b5b 100644
+--- a/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi
++++ b/arch/arm64/boot/dts/freescale/fsl-ls2080a.dtsi
+@@ -262,7 +262,7 @@
+ 
+ 		dspi: dspi@2100000 {
+ 			status = "disabled";
+-			compatible = "fsl,vf610-dspi";
++			compatible = "fsl,ls2080a-dspi", "fsl,ls2085a-dspi";
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 			reg = <0x0 0x2100000 0x0 0x10000>;
+@@ -384,7 +384,7 @@
+ 
+ 		qspi: quadspi@20c0000 {
+ 			status = "disabled";
+-			compatible = "fsl,vf610-qspi";
++			compatible = "fsl,ls2080a-qspi", "fsl,ls1021a-qspi";
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 			reg = <0x0 0x20c0000 0x0 0x10000>,
+-- 
+1.9.0
+
