@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
-%define centupdate 0.29.el7
+%define centupdate 0.30.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
@@ -1491,6 +1491,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Tue Jul 19 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.30.el7]
+- Add APM updates for ahci, gic-v2m, xgenet, and kernel
+
 * Wed Jun 29 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.29.el7]
 - Additional patches and upstream backports for NXP support
 
