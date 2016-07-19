@@ -337,6 +337,12 @@ Patch1009: 0009-Add-X-Gene-ACPI-I2C-device-support.patch
 Patch1010: 0010-drivers-rtc-add-ACPI-support-for-ds1307-RTC-driver.patch
 Patch1011: 0011-drivers-net-xgene-fix-tx-flow-and-extra-irq.patch
 Patch1012: 0012-drivers-net-xgene-classifier-rss-support.patch
+Patch1013: 0013-workqueue-Make-flush_workqueue-available-again-to-no.patch
+Patch1014: 0014-drivers-irqchip-update-irq-gic-v2m.c.patch
+Patch1015: 0015-ahci_xgene-Implement-the-workaround-to-fix-the-missi.patch
+Patch1016: 0016-Revert-ext4-remove-block_device_ejected.patch
+Patch1017: 0017-drivers-net-xgene-upstream-bugfixes.patch
+
 
 # Security patches outside redhat
 Patch2000: KEYS-Fix-keyring-ref-leak-in-join_session_keyring.patch
@@ -696,6 +702,11 @@ git am %{PATCH1009}
 git am %{PATCH1010}
 git am %{PATCH1011}
 git am %{PATCH1012}
+git am %{PATCH1013}
+git am %{PATCH1014}
+git am %{PATCH1015}
+git am %{PATCH1016}
+git am %{PATCH1017}
 
 # apply security patch for cve-2016-0728
 

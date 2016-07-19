@@ -1,0 +1,1032 @@
+From a0e65e3d5f1925197dbf81a317e9531640406680 Mon Sep 17 00:00:00 2001
+From: Manuel Lauss <manuel.lauss@gmail.com>
+Date: Wed, 30 Sep 2015 21:10:25 +0200
+Subject: [PATCH 03/21] ata: ahci: find eSATA ports and flag them as removable
+
+If the AHCI ports' HPCP or ESP bits are set, the port
+should be considered external (e.g. eSATA) and is marked
+as removable.  Userspace tools like udisks then treat it
+like an usb drive.
+
+With this patch applied, when I plug a drive into the esata port,
+KDE pops up a window asking what to do with the drives(s), just
+like it does for any random USB stick.
+
+Removability is indicated to the upper layers by way of the
+SCSI RMB bit, as I haven't found another way to signal
+userspace to treat a sata disk like any usb stick.
+
+Signed-off-by: Manuel Lauss <manuel.lauss@gmail.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+(cherry picked from commit 8a3e33cf92c7b7ae25c589eccd1a69ab11cc4353)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/ahci.h        | 2 ++
+ drivers/ata/libahci.c     | 7 +++++++
+ drivers/ata/libata-scsi.c | 7 +++++--
+ include/linux/libata.h    | 1 +
+ 4 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/ata/ahci.h b/drivers/ata/ahci.h
+index 5b8e8a0..45586c1 100644
+--- a/drivers/ata/ahci.h
++++ b/drivers/ata/ahci.h
+@@ -181,6 +181,8 @@ enum {
+ 	PORT_CMD_ALPE		= (1 << 26), /* Aggressive Link PM enable */
+ 	PORT_CMD_ATAPI		= (1 << 24), /* Device is ATAPI */
+ 	PORT_CMD_FBSCP		= (1 << 22), /* FBS Capable Port */
++	PORT_CMD_ESP		= (1 << 21), /* External Sata Port */
++	PORT_CMD_HPCP		= (1 << 18), /* HotPlug Capable Port */
+ 	PORT_CMD_PMP		= (1 << 17), /* PMP attached */
+ 	PORT_CMD_LIST_ON	= (1 << 15), /* cmd list DMA engine running */
+ 	PORT_CMD_FIS_ON		= (1 << 14), /* FIS DMA engine running */
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index d256a66..2fa551a 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -1117,6 +1117,7 @@ static void ahci_port_init(struct device *dev, struct ata_port *ap,
+ 			   int port_no, void __iomem *mmio,
+ 			   void __iomem *port_mmio)
+ {
++	struct ahci_host_priv *hpriv = ap->host->private_data;
+ 	const char *emsg = NULL;
+ 	int rc;
+ 	u32 tmp;
+@@ -1138,6 +1139,12 @@ static void ahci_port_init(struct device *dev, struct ata_port *ap,
+ 		writel(tmp, port_mmio + PORT_IRQ_STAT);
+ 
+ 	writel(1 << port_no, mmio + HOST_IRQ_STAT);
++
++	/* mark esata ports */
++	tmp = readl(port_mmio + PORT_CMD);
++	if ((tmp & PORT_CMD_HPCP) ||
++	    ((tmp & PORT_CMD_ESP) && (hpriv->cap & HOST_CAP_SXS)))
++		ap->pflags |= ATA_PFLAG_EXTERNAL;
+ }
+ 
+ void ahci_init_controller(struct ata_host *host)
+diff --git a/drivers/ata/libata-scsi.c b/drivers/ata/libata-scsi.c
+index 0d7f0da..183a57b 100644
+--- a/drivers/ata/libata-scsi.c
++++ b/drivers/ata/libata-scsi.c
+@@ -2015,8 +2015,11 @@ static unsigned int ata_scsiop_inq_std(struct ata_scsi_args *args, u8 *rbuf)
+ 
+ 	VPRINTK("ENTER\n");
+ 
+-	/* set scsi removable (RMB) bit per ata bit */
+-	if (ata_id_removable(args->id))
++	/* set scsi removable (RMB) bit per ata bit, or if the
++	 * AHCI port says it's external (Hotplug-capable, eSATA).
++	 */
++	if (ata_id_removable(args->id) ||
++	    (args->dev->link->ap->pflags & ATA_PFLAG_EXTERNAL))
+ 		hdr[1] |= (1 << 7);
+ 
+ 	if (args->dev->class == ATA_DEV_ZAC) {
+diff --git a/include/linux/libata.h b/include/linux/libata.h
+index c9cfbcd..83577f8 100644
+--- a/include/linux/libata.h
++++ b/include/linux/libata.h
+@@ -254,6 +254,7 @@ enum {
+ 
+ 	ATA_PFLAG_PIO32		= (1 << 20),  /* 32bit PIO */
+ 	ATA_PFLAG_PIO32CHANGE	= (1 << 21),  /* 32bit PIO can be turned on/off */
++	ATA_PFLAG_EXTERNAL	= (1 << 22),  /* eSATA/external port */
+ 
+ 	/* struct ata_queued_cmd flags */
+ 	ATA_QCFLAG_ACTIVE	= (1 << 0), /* cmd not yet ack'd to scsi lyer */
+-- 
+2.6.0
+
+From 1fa72a1089f0b69fa6ccecdc5f48cb1ff82e8c70 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dan.j.williams@intel.com>
+Date: Fri, 30 Oct 2015 17:09:30 -0400
+Subject: [PATCH 04/21] ahci: ahci_host_activate: kill IRQF_SHARED
+
+MSI messages are per-device, so there will never be another "shared"
+device in the interrupt chain.
+
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+(cherry picked from commit 899a63c3ebf3fad8723a432c1bba875ec3ef1948)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/libahci.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 2fa551a..67f97e3 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -2493,7 +2493,7 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host, int irq,
+ 
+ 		rc = devm_request_threaded_irq(host->dev, irq + i,
+ 					       ahci_multi_irqs_intr,
+-					       ahci_port_thread_fn, IRQF_SHARED,
++					       ahci_port_thread_fn, 0,
+ 					       pp->irq_desc, host->ports[i]);
+ 		if (rc)
+ 			goto out_free_irqs;
+-- 
+2.6.0
+
+From c160734389e064b73c74d55371200f4cabb20b0f Mon Sep 17 00:00:00 2001
+From: Dan Williams <dan.j.williams@intel.com>
+Date: Fri, 30 Oct 2015 17:09:35 -0400
+Subject: [PATCH 05/21] ahci: cleanup ahci_host_activate_multi_irqs
+
+With devm there is no need to explicitly free irqs on error.
+
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+(cherry picked from commit 0a142b26921c23ccdb6ef802d8047d02ad4cf0a7)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/libahci.c | 21 +++------------------
+ 1 file changed, 3 insertions(+), 18 deletions(-)
+
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 67f97e3..096064c 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -2496,25 +2496,10 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host, int irq,
+ 					       ahci_port_thread_fn, 0,
+ 					       pp->irq_desc, host->ports[i]);
+ 		if (rc)
+-			goto out_free_irqs;
+-	}
+-
+-	for (i = 0; i < host->n_ports; i++)
++			return rc;
+ 		ata_port_desc(host->ports[i], "irq %d", irq + i);
+-
+-	rc = ata_host_register(host, sht);
+-	if (rc)
+-		goto out_free_all_irqs;
+-
+-	return 0;
+-
+-out_free_all_irqs:
+-	i = host->n_ports;
+-out_free_irqs:
+-	for (i--; i >= 0; i--)
+-		devm_free_irq(host->dev, irq + i, host->ports[i]);
+-
+-	return rc;
++	}
++	return ata_host_register(host, sht);
+ }
+ 
+ /**
+-- 
+2.6.0
+
+From 1e259526141bb38e471580fe36d6c705ac53e85b Mon Sep 17 00:00:00 2001
+From: Dan Williams <dan.j.williamps@intel.com>
+Date: Wed, 11 Nov 2015 16:27:33 -0800
+Subject: [PATCH 06/21] ahci: per-port msix support
+
+Some AHCI controllers support per-port MSI-X vectors.  At the same time
+the Linux AHCI driver needs to support one-off architectures that
+implement a single MSI-X vector for all ports.  The heuristic for
+enabling AHCI ports becomes, in order of preference:
+
+1/ per-port multi-MSI-X
+
+2/ per-port multi-MSI
+
+3/ single MSI
+
+4/ single MSI-X
+
+5/ legacy INTX
+
+This all depends on AHCI implementations with potentially broken MSI-X
+requesting less vectors than the number of ports.  If this assumption is
+violated we will need to start explicitly white-listing AHCI-MSIX
+implementations.
+
+Reported-by: Ricardo Neri <ricardo.neri@intel.com>
+[ricardo: fix struct msix_entry handling]
+Reported-by: kernel test robot <ying.huang@linux.intel.com>
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+
+(cherry picked from commit d684a90d38e24dcaf95fdb32c83efe05f80d152a)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/ahci.c    | 67 ++++++++++++++++++++++++++++++++++-----------------
+ drivers/ata/ahci.h    |  2 ++
+ drivers/ata/libahci.c | 19 +++++++++++----
+ 3 files changed, 61 insertions(+), 27 deletions(-)
+
+diff --git a/drivers/ata/ahci.c b/drivers/ata/ahci.c
+index 7e62751..3f2cdf8 100644
+--- a/drivers/ata/ahci.c
++++ b/drivers/ata/ahci.c
+@@ -1291,15 +1291,13 @@ static inline void ahci_gtf_filter_workaround(struct ata_host *host)
+ #endif
+ 
+ /*
+- * ahci_init_msix() only implements single MSI-X support, not multiple
+- * MSI-X per-port interrupts. This is needed for host controllers that only
+- * have MSI-X support implemented, but no MSI or intx.
++ * ahci_init_msix() - optionally enable per-port MSI-X otherwise defer
++ * to single msi.
+  */
+ static int ahci_init_msix(struct pci_dev *pdev, unsigned int n_ports,
+-			  struct ahci_host_priv *hpriv)
++			  struct ahci_host_priv *hpriv, unsigned long flags)
+ {
+-	int rc, nvec;
+-	struct msix_entry entry = {};
++	int nvec, i, rc;
+ 
+ 	/* Do not init MSI-X if MSI is disabled for the device */
+ 	if (hpriv->flags & AHCI_HFLAG_NO_MSI)
+@@ -1309,22 +1307,39 @@ static int ahci_init_msix(struct pci_dev *pdev, unsigned int n_ports,
+ 	if (nvec < 0)
+ 		return nvec;
+ 
+-	if (!nvec) {
++	/*
++	 * Proper MSI-X implementations will have a vector per-port.
++	 * Barring that, we prefer single-MSI over single-MSIX.  If this
++	 * check fails (not enough MSI-X vectors for all ports) we will
++	 * be called again with the flag clear iff ahci_init_msi()
++	 * fails.
++	 */
++	if (flags & AHCI_HFLAG_MULTI_MSIX) {
++		if (nvec < n_ports)
++			return -ENODEV;
++		nvec = n_ports;
++	} else if (nvec) {
++		nvec = 1;
++	} else {
++		/*
++		 * Emit dev_err() since this was the non-legacy irq
++		 * method of last resort.
++		 */
+ 		rc = -ENODEV;
+ 		goto fail;
+ 	}
+ 
+-	/*
+-	 * There can be more than one vector (e.g. for error detection or
+-	 * hdd hotplug). Only the first vector (entry.entry = 0) is used.
+-	 */
+-	rc = pci_enable_msix_exact(pdev, &entry, 1);
++	for (i = 0; i < nvec; i++)
++		hpriv->msix[i].entry = i;
++	rc = pci_enable_msix_exact(pdev, hpriv->msix, nvec);
+ 	if (rc < 0)
+ 		goto fail;
+ 
+-	hpriv->irq = entry.vector;
++	if (nvec > 1)
++		hpriv->flags |= AHCI_HFLAG_MULTI_MSIX;
++	hpriv->irq = hpriv->msix[0].vector; /* for single msi-x */
+ 
+-	return 1;
++	return nvec;
+ fail:
+ 	dev_err(&pdev->dev,
+ 		"failed to enable MSI-X with error %d, # of vectors: %d\n",
+@@ -1388,20 +1403,25 @@ static int ahci_init_interrupts(struct pci_dev *pdev, unsigned int n_ports,
+ {
+ 	int nvec;
+ 
++	/*
++	 * Try to enable per-port MSI-X.  If the host is not capable
++	 * fall back to single MSI before finally attempting single
++	 * MSI-X.
++	 */
++	nvec = ahci_init_msix(pdev, n_ports, hpriv, AHCI_HFLAG_MULTI_MSIX);
++	if (nvec >= 0)
++		return nvec;
++
+ 	nvec = ahci_init_msi(pdev, n_ports, hpriv);
+ 	if (nvec >= 0)
+ 		return nvec;
+ 
+-	/*
+-	 * Currently, MSI-X support only implements single IRQ mode and
+-	 * exists for controllers which can't do other types of IRQ. Only
+-	 * set it up if MSI fails.
+-	 */
+-	nvec = ahci_init_msix(pdev, n_ports, hpriv);
++	/* try single-msix */
++	nvec = ahci_init_msix(pdev, n_ports, hpriv, 0);
+ 	if (nvec >= 0)
+ 		return nvec;
+ 
+-	/* lagacy intx interrupts */
++	/* legacy intx interrupts */
+ 	pci_intx(pdev, 1);
+ 	hpriv->irq = pdev->irq;
+ 
+@@ -1575,7 +1595,10 @@ static int ahci_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	if (!host)
+ 		return -ENOMEM;
+ 	host->private_data = hpriv;
+-
++	hpriv->msix = devm_kzalloc(&pdev->dev,
++			sizeof(struct msix_entry) * n_ports, GFP_KERNEL);
++	if (!hpriv->msix)
++		return -ENOMEM;
+ 	ahci_init_interrupts(pdev, n_ports, hpriv);
+ 
+ 	if (!(hpriv->cap & HOST_CAP_SSS) || ahci_ignore_sss)
+diff --git a/drivers/ata/ahci.h b/drivers/ata/ahci.h
+index 45586c1..9e60c50 100644
+--- a/drivers/ata/ahci.h
++++ b/drivers/ata/ahci.h
+@@ -242,6 +242,7 @@ enum {
+ 	AHCI_HFLAG_NO_FBS		= (1 << 18), /* no FBS */
+ 	AHCI_HFLAG_EDGE_IRQ		= (1 << 19), /* HOST_IRQ_STAT behaves as
+ 							Edge Triggered */
++	AHCI_HFLAG_MULTI_MSIX		= (1 << 20), /* per-port MSI-X */
+ 
+ 	/* ap->flags bits */
+ 
+@@ -343,6 +344,7 @@ struct ahci_host_priv {
+ 	 * the PHY position in this array.
+ 	 */
+ 	struct phy		**phys;
++	struct msix_entry	*msix;		/* Optional MSI-X support */
+ 	unsigned		nports;		/* Number of ports */
+ 	void			*plat_data;	/* Other platform data */
+ 	unsigned int		irq;		/* interrupt line */
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 096064c..0a5645f 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -43,6 +43,7 @@
+ #include <scsi/scsi_host.h>
+ #include <scsi/scsi_cmnd.h>
+ #include <linux/libata.h>
++#include <linux/pci.h>
+ #include "ahci.h"
+ #include "libata.h"
+ 
+@@ -2470,9 +2471,10 @@ void ahci_set_em_messages(struct ahci_host_priv *hpriv,
+ }
+ EXPORT_SYMBOL_GPL(ahci_set_em_messages);
+ 
+-static int ahci_host_activate_multi_irqs(struct ata_host *host, int irq,
++static int ahci_host_activate_multi_irqs(struct ata_host *host,
+ 					 struct scsi_host_template *sht)
+ {
++	struct ahci_host_priv *hpriv = host->private_data;
+ 	int i, rc;
+ 
+ 	rc = ata_host_start(host);
+@@ -2484,6 +2486,12 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host, int irq,
+ 	 */
+ 	for (i = 0; i < host->n_ports; i++) {
+ 		struct ahci_port_priv *pp = host->ports[i]->private_data;
++		int irq;
++
++		if (hpriv->flags & AHCI_HFLAG_MULTI_MSIX)
++			irq = hpriv->msix[i].vector;
++		else
++			irq = hpriv->irq + i;
+ 
+ 		/* Do not receive interrupts sent by dummy ports */
+ 		if (!pp) {
+@@ -2491,14 +2499,15 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host, int irq,
+ 			continue;
+ 		}
+ 
+-		rc = devm_request_threaded_irq(host->dev, irq + i,
++		rc = devm_request_threaded_irq(host->dev, irq,
+ 					       ahci_multi_irqs_intr,
+ 					       ahci_port_thread_fn, 0,
+ 					       pp->irq_desc, host->ports[i]);
+ 		if (rc)
+ 			return rc;
+-		ata_port_desc(host->ports[i], "irq %d", irq + i);
++		ata_port_desc(host->ports[i], "irq %d", irq);
+ 	}
++
+ 	return ata_host_register(host, sht);
+ }
+ 
+@@ -2519,8 +2528,8 @@ int ahci_host_activate(struct ata_host *host, struct scsi_host_template *sht)
+ 	int irq = hpriv->irq;
+ 	int rc;
+ 
+-	if (hpriv->flags & AHCI_HFLAG_MULTI_MSI)
+-		rc = ahci_host_activate_multi_irqs(host, irq, sht);
++	if (hpriv->flags & (AHCI_HFLAG_MULTI_MSI | AHCI_HFLAG_MULTI_MSIX))
++		rc = ahci_host_activate_multi_irqs(host, sht);
+ 	else if (hpriv->flags & AHCI_HFLAG_EDGE_IRQ)
+ 		rc = ata_host_activate(host, irq, ahci_single_edge_irq_intr,
+ 				       IRQF_SHARED, sht);
+-- 
+2.6.0
+
+From bdd2e8d9ea72935b4ec52fd1b7b65e499987b268 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dan.j.williams@intel.com>
+Date: Wed, 11 Nov 2015 16:27:38 -0800
+Subject: [PATCH 07/21] ahci: switch from 'threaded' to 'hardirq' interrupt
+ handling
+
+For high frequency I/O the overhead of threaded interrupts impacts
+performance.  A quick out-of-the-box test (i.e. no affinity tuning)
+shows ~10% random read performance at ~20% less cpu.  The cpu wins
+appear to be from reduced lock contention.
+
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+(cherry picked from commit a6b7fb764ed2a6b7bb1ac96d93c06787aa589092)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/libahci.c | 34 ++++++++--------------------------
+ 1 file changed, 8 insertions(+), 26 deletions(-)
+
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 0a5645f..1b6c7cc 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -1796,41 +1796,24 @@ static void ahci_port_intr(struct ata_port *ap)
+ 	ahci_handle_port_interrupt(ap, port_mmio, status);
+ }
+ 
+-static irqreturn_t ahci_port_thread_fn(int irq, void *dev_instance)
++static irqreturn_t ahci_multi_irqs_intr_hard(int irq, void *dev_instance)
+ {
+ 	struct ata_port *ap = dev_instance;
+-	struct ahci_port_priv *pp = ap->private_data;
+ 	void __iomem *port_mmio = ahci_port_base(ap);
+ 	u32 status;
+ 
+-	status = atomic_xchg(&pp->intr_status, 0);
+-	if (!status)
+-		return IRQ_NONE;
+-
+-	spin_lock_bh(ap->lock);
+-	ahci_handle_port_interrupt(ap, port_mmio, status);
+-	spin_unlock_bh(ap->lock);
+-
+-	return IRQ_HANDLED;
+-}
+-
+-static irqreturn_t ahci_multi_irqs_intr(int irq, void *dev_instance)
+-{
+-	struct ata_port *ap = dev_instance;
+-	void __iomem *port_mmio = ahci_port_base(ap);
+-	struct ahci_port_priv *pp = ap->private_data;
+-	u32 status;
+-
+ 	VPRINTK("ENTER\n");
+ 
+ 	status = readl(port_mmio + PORT_IRQ_STAT);
+ 	writel(status, port_mmio + PORT_IRQ_STAT);
+ 
+-	atomic_or(status, &pp->intr_status);
++	spin_lock(ap->lock);
++	ahci_handle_port_interrupt(ap, port_mmio, status);
++	spin_unlock(ap->lock);
+ 
+ 	VPRINTK("EXIT\n");
+ 
+-	return IRQ_WAKE_THREAD;
++	return IRQ_HANDLED;
+ }
+ 
+ static u32 ahci_handle_port_intr(struct ata_host *host, u32 irq_masked)
+@@ -2499,10 +2482,9 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host,
+ 			continue;
+ 		}
+ 
+-		rc = devm_request_threaded_irq(host->dev, irq,
+-					       ahci_multi_irqs_intr,
+-					       ahci_port_thread_fn, 0,
+-					       pp->irq_desc, host->ports[i]);
++		rc = devm_request_irq(host->dev, irq, ahci_multi_irqs_intr_hard,
++				0, pp->irq_desc, host->ports[i]);
++
+ 		if (rc)
+ 			return rc;
+ 		ata_port_desc(host->ports[i], "irq %d", irq);
+-- 
+2.6.0
+
+From cf638a7790a2f270a14e8e6ebb0ccd57fb285e30 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dan.j.williams@intel.com>
+Date: Sat, 5 Dec 2015 16:18:44 -0800
+Subject: [PATCH 08/21] ahci: compile out msi/msix infrastructure
+
+Quoting Arnd:
+    The AHCI driver is used for some on-chip devices that do not use PCI
+    for probing, and it can be built even when CONFIG_PCI is disabled, but
+    that now results in a build failure:
+
+    ata/libahci.c: In function 'ahci_host_activate_multi_irqs':
+    ata/libahci.c:2475:4: error: invalid use of undefined type 'struct msix_entry'
+    ata/libahci.c:2475:21: error: dereferencing pointer to incomplete type 'struct msix_entry'
+
+Add ifdef CONFIG_PCI_MSI infrastructure to compile out the multi-msi and
+multi-msix code.
+
+Reported-by: Arnd Bergmann <arnd@arndb.de>
+Tested--by: Arnd Bergmann <arnd@arndb.de>
+[arnd: fix up pci enabled case]
+Reported-by: Paul Gortmaker <paul.gortmaker@windriver.com>
+Fixes: d684a90d38e2 ("ahci: per-port msix support")
+Signed-off-by: Dan Williams <dan.j.williams@intel.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+
+(cherry picked from commit f893180b79f6ada44068e4fe764eb2de70ee6bea)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/ahci.h    | 26 ++++++++++++++++++++++++--
+ drivers/ata/libahci.c |  7 +------
+ 2 files changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/ata/ahci.h b/drivers/ata/ahci.h
+index 9e60c50..60e7f66 100644
+--- a/drivers/ata/ahci.h
++++ b/drivers/ata/ahci.h
+@@ -35,6 +35,7 @@
+ #ifndef _AHCI_H
+ #define _AHCI_H
+ 
++#include <linux/pci.h>
+ #include <linux/clk.h>
+ #include <linux/libata.h>
+ #include <linux/phy/phy.h>
+@@ -237,12 +238,18 @@ enum {
+ 	AHCI_HFLAG_DELAY_ENGINE		= (1 << 15), /* do not start engine on
+ 						        port start (wait until
+ 						        error-handling stage) */
+-	AHCI_HFLAG_MULTI_MSI		= (1 << 16), /* multiple PCI MSIs */
+ 	AHCI_HFLAG_NO_DEVSLP		= (1 << 17), /* no device sleep */
+ 	AHCI_HFLAG_NO_FBS		= (1 << 18), /* no FBS */
+ 	AHCI_HFLAG_EDGE_IRQ		= (1 << 19), /* HOST_IRQ_STAT behaves as
+ 							Edge Triggered */
+-	AHCI_HFLAG_MULTI_MSIX		= (1 << 20), /* per-port MSI-X */
++#ifdef CONFIG_PCI_MSI
++	AHCI_HFLAG_MULTI_MSI		= (1 << 20), /* multiple PCI MSIs */
++	AHCI_HFLAG_MULTI_MSIX		= (1 << 21), /* per-port MSI-X */
++#else
++	/* compile out MSI infrastructure */
++	AHCI_HFLAG_MULTI_MSI		= 0,
++	AHCI_HFLAG_MULTI_MSIX		= 0,
++#endif
+ 
+ 	/* ap->flags bits */
+ 
+@@ -356,6 +363,21 @@ struct ahci_host_priv {
+ 	void			(*start_engine)(struct ata_port *ap);
+ };
+ 
++#ifdef CONFIG_PCI_MSI
++static inline int ahci_irq_vector(struct ahci_host_priv *hpriv, int port)
++{
++	if (hpriv->flags & AHCI_HFLAG_MULTI_MSIX)
++		return hpriv->msix[port].vector;
++	else
++		return hpriv->irq + port;
++}
++#else
++static inline int ahci_irq_vector(struct ahci_host_priv *hpriv, int port)
++{
++	return hpriv->irq;
++}
++#endif
++
+ extern int ahci_ignore_sss;
+ 
+ extern struct device_attribute *ahci_shost_attrs[];
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 1b6c7cc..eda3cf2 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -2469,12 +2469,7 @@ static int ahci_host_activate_multi_irqs(struct ata_host *host,
+ 	 */
+ 	for (i = 0; i < host->n_ports; i++) {
+ 		struct ahci_port_priv *pp = host->ports[i]->private_data;
+-		int irq;
+-
+-		if (hpriv->flags & AHCI_HFLAG_MULTI_MSIX)
+-			irq = hpriv->msix[i].vector;
+-		else
+-			irq = hpriv->irq + i;
++		int irq = ahci_irq_vector(hpriv, i);
+ 
+ 		/* Do not receive interrupts sent by dummy ports */
+ 		if (!pp) {
+-- 
+2.6.0
+
+From d14e257f2521887eb2da0bdb0c2b6b776aa06f61 Mon Sep 17 00:00:00 2001
+From: Tejun Heo <tj@kernel.org>
+Date: Fri, 15 Jan 2016 15:13:05 -0500
+Subject: [PATCH 09/21] libata: disable forced PORTS_IMPL for >= AHCI 1.3
+
+Some early controllers incorrectly reported zero ports in PORTS_IMPL
+register and the ahci driver fabricates PORTS_IMPL from the number of
+ports in those cases.  This hasn't mattered but with the new nvme
+controllers there are cases where zero PORTS_IMPL is valid and should
+be honored.
+
+Disable the workaround for >= AHCI 1.3.
+
+Signed-off-by: Tejun Heo <tj@kernel.org>
+Reported-by: Andy Lutomirski <luto@amacapital.net>
+Link: http://lkml.kernel.org/g/CALCETrU7yMvXEDhjAUShoHEhDwifJGapdw--BKxsP0jmjKGmRw@mail.gmail.com
+Cc: Sergei Shtylyov <sergei.shtylyov@cogentembedded.com>
+Cc: stable@vger.kernel.org
+(cherry picked from commit 566d1827df2ef0cbe921d3d6946ac3007b1a6938)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/libahci.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index eda3cf2..c198280 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -496,8 +496,8 @@ void ahci_save_initial_config(struct device *dev, struct ahci_host_priv *hpriv)
+ 		}
+ 	}
+ 
+-	/* fabricate port_map from cap.nr_ports */
+-	if (!port_map) {
++	/* fabricate port_map from cap.nr_ports for < AHCI 1.3 */
++	if (!port_map && vers < 0x10300) {
+ 		port_map = (1 << ahci_nr_ports(cap)) - 1;
+ 		dev_warn(dev, "forcing PORTS_IMPL to 0x%x\n", port_map);
+ 
+-- 
+2.6.0
+
+From 3c8cc8a0edd22abd21ac35138650820a0537ac76 Mon Sep 17 00:00:00 2001
+From: Suman Tripathi <stripathi@apm.com>
+Date: Sat, 6 Feb 2016 11:25:22 +0530
+Subject: [PATCH 10/21] libahci: Implement the capability to override the
+ generic ahci interrupt handler.
+
+This patch implements the capability to override the generic AHCI
+interrupt handler so that specific ahci drivers can implement their
+own custom interrupt handler routines.  It also exports
+ahci_handle_port_intr so that custom irq_handler implementations can
+use it.
+
+tj: s/ahci_irq_handler/irq_handler/ and updated description.
+
+Signed-off-by: Suman Tripathi <stripathi@apm.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+(cherry picked from commit f070d6715509dafc0af223577c896fe3d204ca88)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/ahci.h    |  2 ++
+ drivers/ata/libahci.c | 27 ++++++++++++++++++++-------
+ 2 files changed, 22 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/ata/ahci.h b/drivers/ata/ahci.h
+index 60e7f66..42d4e57 100644
+--- a/drivers/ata/ahci.h
++++ b/drivers/ata/ahci.h
+@@ -361,6 +361,7 @@ struct ahci_host_priv {
+ 	 * be overridden anytime before the host is activated.
+ 	 */
+ 	void			(*start_engine)(struct ata_port *ap);
++	irqreturn_t 		(*irq_handler)(int irq, void *dev_instance);
+ };
+ 
+ #ifdef CONFIG_PCI_MSI
+@@ -424,6 +425,7 @@ int ahci_reset_em(struct ata_host *host);
+ void ahci_print_info(struct ata_host *host, const char *scc_s);
+ int ahci_host_activate(struct ata_host *host, struct scsi_host_template *sht);
+ void ahci_error_handler(struct ata_port *ap);
++u32 ahci_handle_port_intr(struct ata_host *host, u32 irq_masked);
+ 
+ static inline void __iomem *__ahci_port_base(struct ata_host *host,
+ 					     unsigned int port_no)
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index c198280..87a2acb 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -113,6 +113,9 @@ static ssize_t ahci_store_em_buffer(struct device *dev,
+ 				    const char *buf, size_t size);
+ static ssize_t ahci_show_em_supported(struct device *dev,
+ 				      struct device_attribute *attr, char *buf);
++static irqreturn_t ahci_single_edge_irq_intr(int irq, void *dev_instance);
++
++static irqreturn_t ahci_single_level_irq_intr(int irq, void *dev_instance);
+ 
+ static DEVICE_ATTR(ahci_host_caps, S_IRUGO, ahci_show_host_caps, NULL);
+ static DEVICE_ATTR(ahci_host_cap2, S_IRUGO, ahci_show_host_cap2, NULL);
+@@ -512,6 +515,11 @@ void ahci_save_initial_config(struct device *dev, struct ahci_host_priv *hpriv)
+ 
+ 	if (!hpriv->start_engine)
+ 		hpriv->start_engine = ahci_start_engine;
++
++	if (!hpriv->irq_handler)
++		hpriv->irq_handler = (hpriv->flags & AHCI_HFLAG_EDGE_IRQ) ?
++				     ahci_single_edge_irq_intr :
++				     ahci_single_level_irq_intr;
+ }
+ EXPORT_SYMBOL_GPL(ahci_save_initial_config);
+ 
+@@ -1816,7 +1824,7 @@ static irqreturn_t ahci_multi_irqs_intr_hard(int irq, void *dev_instance)
+ 	return IRQ_HANDLED;
+ }
+ 
+-static u32 ahci_handle_port_intr(struct ata_host *host, u32 irq_masked)
++u32 ahci_handle_port_intr(struct ata_host *host, u32 irq_masked)
+ {
+ 	unsigned int i, handled = 0;
+ 
+@@ -1842,6 +1850,7 @@ static u32 ahci_handle_port_intr(struct ata_host *host, u32 irq_masked)
+ 
+ 	return handled;
+ }
++EXPORT_SYMBOL_GPL(ahci_handle_port_intr);
+ 
+ static irqreturn_t ahci_single_edge_irq_intr(int irq, void *dev_instance)
+ {
+@@ -2505,14 +2514,18 @@ int ahci_host_activate(struct ata_host *host, struct scsi_host_template *sht)
+ 	int irq = hpriv->irq;
+ 	int rc;
+ 
+-	if (hpriv->flags & (AHCI_HFLAG_MULTI_MSI | AHCI_HFLAG_MULTI_MSIX))
++	if (hpriv->flags & (AHCI_HFLAG_MULTI_MSI | AHCI_HFLAG_MULTI_MSIX)) {
++		if (hpriv->irq_handler)
++			dev_warn(host->dev, "both AHCI_HFLAG_MULTI_MSI flag set \
++				 and custom irq handler implemented\n");
++
+ 		rc = ahci_host_activate_multi_irqs(host, sht);
+-	else if (hpriv->flags & AHCI_HFLAG_EDGE_IRQ)
+-		rc = ata_host_activate(host, irq, ahci_single_edge_irq_intr,
+-				       IRQF_SHARED, sht);
+-	else
+-		rc = ata_host_activate(host, irq, ahci_single_level_irq_intr,
++	} else {
++		rc = ata_host_activate(host, irq, hpriv->irq_handler,
+ 				       IRQF_SHARED, sht);
++	}
++
++
+ 	return rc;
+ }
+ EXPORT_SYMBOL_GPL(ahci_host_activate);
+-- 
+2.6.0
+
+From 516afb40a8bfc63c6b0a23d13ab618954128b52b Mon Sep 17 00:00:00 2001
+From: Suman Tripathi <stripathi@apm.com>
+Date: Sat, 6 Feb 2016 11:25:23 +0530
+Subject: [PATCH 11/21] ata: Remove the AHCI_HFLAG_EDGE_IRQ support from
+ libahci.
+
+The flexibility to override the irq handles in the LLD's are already
+present, so controllers implementing a edge trigger latch can
+implement their own interrupt handler inside the driver.  This patch
+removes the AHCI_HFLAG_EDGE_IRQ support from libahci and moves edge
+irq handling to ahci_xgene.
+
+tj: Minor update to description.
+
+Signed-off-by: Suman Tripathi <stripathi@apm.com>
+Signed-off-by: Tejun Heo <tj@kenrel.org>
+(cherry picked from commit d867b95f965457b9e85fb061ef8e3fdc029116ed)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/ahci.h       |  3 +--
+ drivers/ata/ahci_xgene.c | 40 +++++++++++++++++++++++++++++++++++++++-
+ drivers/ata/libahci.c    | 43 +------------------------------------------
+ 3 files changed, 41 insertions(+), 45 deletions(-)
+
+diff --git a/drivers/ata/ahci.h b/drivers/ata/ahci.h
+index 42d4e57..4fe2b8d 100644
+--- a/drivers/ata/ahci.h
++++ b/drivers/ata/ahci.h
+@@ -240,8 +240,7 @@ enum {
+ 						        error-handling stage) */
+ 	AHCI_HFLAG_NO_DEVSLP		= (1 << 17), /* no device sleep */
+ 	AHCI_HFLAG_NO_FBS		= (1 << 18), /* no FBS */
+-	AHCI_HFLAG_EDGE_IRQ		= (1 << 19), /* HOST_IRQ_STAT behaves as
+-							Edge Triggered */
++
+ #ifdef CONFIG_PCI_MSI
+ 	AHCI_HFLAG_MULTI_MSI		= (1 << 20), /* multiple PCI MSIs */
+ 	AHCI_HFLAG_MULTI_MSIX		= (1 << 21), /* per-port MSI-X */
+diff --git a/drivers/ata/ahci_xgene.c b/drivers/ata/ahci_xgene.c
+index cc91850..5d47365 100644
+--- a/drivers/ata/ahci_xgene.c
++++ b/drivers/ata/ahci_xgene.c
+@@ -561,6 +561,43 @@ softreset_retry:
+ 	return rc;
+ }
+ 
++static irqreturn_t xgene_ahci_irq_intr(int irq, void *dev_instance)
++{
++	struct ata_host *host = dev_instance;
++	struct ahci_host_priv *hpriv;
++	unsigned int rc = 0;
++	void __iomem *mmio;
++	u32 irq_stat, irq_masked;
++
++	VPRINTK("ENTER\n");
++
++	hpriv = host->private_data;
++	mmio = hpriv->mmio;
++
++	/* sigh.  0xffffffff is a valid return from h/w */
++	irq_stat = readl(mmio + HOST_IRQ_STAT);
++	if (!irq_stat)
++		return IRQ_NONE;
++
++	irq_masked = irq_stat & hpriv->port_map;
++
++	spin_lock(&host->lock);
++
++	/*
++	 * HOST_IRQ_STAT behaves as edge triggered latch meaning that
++	 * it should be cleared before all the port events are cleared.
++	 */
++	writel(irq_stat, mmio + HOST_IRQ_STAT);
++
++	rc = ahci_handle_port_intr(host, irq_masked);
++
++	spin_unlock(&host->lock);
++
++	VPRINTK("EXIT\n");
++
++	return IRQ_RETVAL(rc);
++}
++
+ static struct ata_port_operations xgene_ahci_v1_ops = {
+ 	.inherits = &ahci_ops,
+ 	.dev_config = xgene_ahci_dev_config,
+@@ -795,7 +832,8 @@ skip_clk_phy:
+ 		hpriv->flags = AHCI_HFLAG_NO_NCQ;
+ 		break;
+ 	case XGENE_AHCI_V2:
+-		hpriv->flags |= AHCI_HFLAG_YES_FBS | AHCI_HFLAG_EDGE_IRQ;
++		hpriv->flags |= AHCI_HFLAG_YES_FBS;
++		hpriv->irq_handler = xgene_ahci_irq_intr;
+ 		break;
+ 	default:
+ 		break;
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 87a2acb..6dcd628 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -113,8 +113,6 @@ static ssize_t ahci_store_em_buffer(struct device *dev,
+ 				    const char *buf, size_t size);
+ static ssize_t ahci_show_em_supported(struct device *dev,
+ 				      struct device_attribute *attr, char *buf);
+-static irqreturn_t ahci_single_edge_irq_intr(int irq, void *dev_instance);
+-
+ static irqreturn_t ahci_single_level_irq_intr(int irq, void *dev_instance);
+ 
+ static DEVICE_ATTR(ahci_host_caps, S_IRUGO, ahci_show_host_caps, NULL);
+@@ -517,9 +515,7 @@ void ahci_save_initial_config(struct device *dev, struct ahci_host_priv *hpriv)
+ 		hpriv->start_engine = ahci_start_engine;
+ 
+ 	if (!hpriv->irq_handler)
+-		hpriv->irq_handler = (hpriv->flags & AHCI_HFLAG_EDGE_IRQ) ?
+-				     ahci_single_edge_irq_intr :
+-				     ahci_single_level_irq_intr;
++		hpriv->irq_handler = ahci_single_level_irq_intr;
+ }
+ EXPORT_SYMBOL_GPL(ahci_save_initial_config);
+ 
+@@ -1852,43 +1848,6 @@ u32 ahci_handle_port_intr(struct ata_host *host, u32 irq_masked)
+ }
+ EXPORT_SYMBOL_GPL(ahci_handle_port_intr);
+ 
+-static irqreturn_t ahci_single_edge_irq_intr(int irq, void *dev_instance)
+-{
+-	struct ata_host *host = dev_instance;
+-	struct ahci_host_priv *hpriv;
+-	unsigned int rc = 0;
+-	void __iomem *mmio;
+-	u32 irq_stat, irq_masked;
+-
+-	VPRINTK("ENTER\n");
+-
+-	hpriv = host->private_data;
+-	mmio = hpriv->mmio;
+-
+-	/* sigh.  0xffffffff is a valid return from h/w */
+-	irq_stat = readl(mmio + HOST_IRQ_STAT);
+-	if (!irq_stat)
+-		return IRQ_NONE;
+-
+-	irq_masked = irq_stat & hpriv->port_map;
+-
+-	spin_lock(&host->lock);
+-
+-	/*
+-	 * HOST_IRQ_STAT behaves as edge triggered latch meaning that
+-	 * it should be cleared before all the port events are cleared.
+-	 */
+-	writel(irq_stat, mmio + HOST_IRQ_STAT);
+-
+-	rc = ahci_handle_port_intr(host, irq_masked);
+-
+-	spin_unlock(&host->lock);
+-
+-	VPRINTK("EXIT\n");
+-
+-	return IRQ_RETVAL(rc);
+-}
+-
+ static irqreturn_t ahci_single_level_irq_intr(int irq, void *dev_instance)
+ {
+ 	struct ata_host *host = dev_instance;
+-- 
+2.6.0
+
+From 44d965b4274aeefd93d3f249bc1485dcf05fe26b Mon Sep 17 00:00:00 2001
+From: Suman Tripathi <stripathi@apm.com>
+Date: Sat, 6 Feb 2016 11:25:24 +0530
+Subject: [PATCH 12/21] ahci_xgene: Implement the workaround to fix the missing
+ of the edge interrupt for the HOST_IRQ_STAT.
+
+Due to H/W errata, the HOST_IRQ_STAT register misses the edge interrupt
+when clearing the HOST_IRQ_STAT register and hardware reporting the
+PORT_IRQ_STAT register happens to be at the same clock cycle.
+
+Signed-off-by: Suman Tripathi <stripathi@apm.com>
+Signed-off-by: Tejun Heo <tj@kernel.org>
+(cherry picked from commit 32aea2680de01f539d928112150279fdeeabca00)
+Signed-off-by: Phong Vo <pvo@apm.com>
+---
+ drivers/ata/ahci_xgene.c | 47 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/ata/ahci_xgene.c b/drivers/ata/ahci_xgene.c
+index 5d47365..410ee28 100644
+--- a/drivers/ata/ahci_xgene.c
++++ b/drivers/ata/ahci_xgene.c
+@@ -561,6 +561,51 @@ softreset_retry:
+ 	return rc;
+ }
+ 
++/**
++ * xgene_ahci_handle_broken_edge_irq - Handle the broken irq.
++ * @ata_host: Host that recieved the irq
++ * @irq_masked: HOST_IRQ_STAT value
++ *
++ * For hardware with broken edge trigger latch
++ * the HOST_IRQ_STAT register misses the edge interrupt
++ * when clearing of HOST_IRQ_STAT register and hardware
++ * reporting the PORT_IRQ_STAT register at the
++ * same clock cycle.
++ * As such, the algorithm below outlines the workaround.
++ *
++ * 1. Read HOST_IRQ_STAT register and save the state.
++ * 2. Clear the HOST_IRQ_STAT register.
++ * 3. Read back the HOST_IRQ_STAT register.
++ * 4. If HOST_IRQ_STAT register equals to zero, then
++ *    traverse the rest of port's PORT_IRQ_STAT register
++ *    to check if an interrupt is triggered at that point else
++ *    go to step 6.
++ * 5. If PORT_IRQ_STAT register of rest ports is not equal to zero
++ *    then update the state of HOST_IRQ_STAT saved in step 1.
++ * 6. Handle port interrupts.
++ * 7. Exit
++ */
++static int xgene_ahci_handle_broken_edge_irq(struct ata_host *host,
++					     u32 irq_masked)
++{
++	struct ahci_host_priv *hpriv = host->private_data;
++	void __iomem *port_mmio;
++	int i;
++
++	if (!readl(hpriv->mmio + HOST_IRQ_STAT)) {
++		for (i = 0; i < host->n_ports; i++) {
++			if (irq_masked & (1 << i))
++				continue;
++
++			port_mmio = ahci_port_base(host->ports[i]);
++			if (readl(port_mmio + PORT_IRQ_STAT))
++				irq_masked |= (1 << i);
++		}
++	}
++
++	return ahci_handle_port_intr(host, irq_masked);
++}
++
+ static irqreturn_t xgene_ahci_irq_intr(int irq, void *dev_instance)
+ {
+ 	struct ata_host *host = dev_instance;
+@@ -589,7 +634,7 @@ static irqreturn_t xgene_ahci_irq_intr(int irq, void *dev_instance)
+ 	 */
+ 	writel(irq_stat, mmio + HOST_IRQ_STAT);
+ 
+-	rc = ahci_handle_port_intr(host, irq_masked);
++	rc = xgene_ahci_handle_broken_edge_irq(host, irq_masked);
+ 
+ 	spin_unlock(&host->lock);
+ 
+-- 
+2.6.0
+
