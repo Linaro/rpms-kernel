@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.2.0
 %define pkgrelease 0.21.el7
-%define centupdate 0.30.el7
+%define centupdate 0.31.el7
 
 # allow pkg_release to have configurable %{?dist} tag
 %define specrelease %%SPECRELEASE%%
@@ -346,6 +346,7 @@ Patch1017: 0017-drivers-net-xgene-upstream-bugfixes.patch
 
 # Security patches outside redhat
 Patch2000: KEYS-Fix-keyring-ref-leak-in-join_session_keyring.patch
+Patch2001: dirty-cow.patch
 
 # NXP Patches
 Patch3001: NXP-Layerscape-support.patch
@@ -711,7 +712,7 @@ git am %{PATCH1017}
 # apply security patch for cve-2016-0728
 
 git am %{PATCH2000}
-
+git am %{PATCH2001}
 # Apply NXP patches
 git am %{PATCH3001}
 git am %{PATCH3002}
@@ -1491,6 +1492,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Fri Oct 28 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.31.el7]
+- Add patch for dirty-cow
+
 * Tue Jul 19 2016 Jim Perrin <jperrin@centos.org> [4.2.0-0.30.el7]
 - Add APM updates for ahci, gic-v2m, xgenet, and kernel
 
