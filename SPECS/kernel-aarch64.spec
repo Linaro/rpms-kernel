@@ -11,15 +11,16 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.8.0
-%define pkgrelease 0.1.linaro
-
-# allow pkg_release to have configurable %{?dist} tag
-%define specrelease %%SPECRELEASE%%
+%define gitrelease be55530
+%define pkgrelease 1.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
-## git archive --format=tar --prefix=linux-4.8.0-0.1.linaro/ HEAD | xz -c > linux-4.8.0-0.1.linaro.tar.xz
-%define rheltarball %{rpmversion}-%{pkgrelease}
+## git archive --format=tar --prefix=linux-4.8.0-HASH/ HASH | xz -c > linux-4.8.0-HASH.tar.xz
+%define rheltarball %{rpmversion}-%{gitrelease}
+
+# allow pkg_release to have configurable %{?dist} tag
+%define specrelease %%SPECRELEASE%%
 
 # What parts do we want to build?  We must build at least one kernel.
 # These are the kernels that are built IF the architecture allows it.
@@ -270,7 +271,7 @@ BuildRequires: glibc-static
 %define cross_opts CROSS_COMPILE=%{cross_target}-linux-gnu-
 %endif
 
-Source0: linux-%{rpmversion}-%{pkgrelease}.tar.xz
+Source0: linux-%{rheltarball}.tar.xz
 
 Source1: Makefile.common
 
@@ -323,6 +324,7 @@ Source56: config-debug
 # Additional patches
 Patch1001: 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch
 Patch1002: 0001-arm64-Workaround-for-QDF2432-ID_AA64-SR-accesses.patch
+Patch1003: 0001-arm64-prefer-ACPI-by-default.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -655,6 +657,7 @@ fi
 # Apply patches
 git am %{PATCH1001}
 git am %{PATCH1002}
+git am %{PATCH1003}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1423,6 +1426,11 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Fri Nov 4 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.8.0-1.gitbe55530.linaro]
+- Prefer ACPI boot by default
+- Add the git hash used as part of the package version
+- ARM64 config updated to include better support for HiSilicon platforms
+
 * Tue Nov 1 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.8.0-0.1.linaro]
 - Initial release for the 4.8 based RPK (https://github.com/Linaro/rpk.git)
 - RPK git be555307 from Sat Oct 29 12:06:25 2016 -0600
