@@ -10,9 +10,9 @@ Summary: The Linux kernel
 # be 0.
 %global released_kernel 1
 
-%define rpmversion 4.8.0
-%define gitrelease be55530
-%define pkgrelease 2.git%{gitrelease}.linaro
+%define rpmversion 4.9.0
+%define gitrelease 6598138
+%define pkgrelease 1.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -323,9 +323,7 @@ Source56: config-debug
 
 # Additional patches
 Patch1001: 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch
-Patch1002: 0001-arm64-Workaround-for-QDF2432-ID_AA64-SR-accesses.patch
-Patch1003: 0001-arm64-prefer-ACPI-by-default.patch
-Patch1004: 0001-arm-arm64-vgic-dont-flush-sync.patch
+Patch1002: 0001-arm64-prefer-ACPI-by-default.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -658,8 +656,6 @@ fi
 # Apply patches
 git am %{PATCH1001}
 git am %{PATCH1002}
-git am %{PATCH1003}
-git am %{PATCH1004}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1428,6 +1424,10 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Wed Nov 9 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-1.git6598138.linaro]
+- Early RP16.12 kernel, based on 4.9-rc4 (LEG + HiSilicon patches)
+- https://github.com/rsalveti/linux/tree/rpb1612-dev
+
 * Mon Nov 7 2016 Tyler Baker <tyler.baker@linaro.org> [4.8.0-2.gitbe55530.linaro]
 - Fix for ARM KVM accepted into v4.8 stable.
 
