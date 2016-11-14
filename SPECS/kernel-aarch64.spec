@@ -11,12 +11,12 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 6598138
-%define pkgrelease 1.git%{gitrelease}.linaro
+%define gitrelease 5fa96d5
+%define pkgrelease 2.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
-## git archive --format=tar --prefix=linux-4.8.0-HASH/ HASH | xz -c > linux-4.8.0-HASH.tar.xz
+## git archive --format=tar --prefix=linux-4.9.0-HASH/ HASH | xz -c > linux-4.9.0-HASH.tar.xz
 %define rheltarball %{rpmversion}-%{gitrelease}
 
 # allow pkg_release to have configurable %{?dist} tag
@@ -324,6 +324,7 @@ Source56: config-debug
 # Additional patches
 Patch1001: 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch
 Patch1002: 0001-arm64-prefer-ACPI-by-default.patch
+Patch1003: 0001-KVM-arm-arm64-HiSilicon-GIC-quirk-for-kvm-CPU-stall-.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -656,6 +657,7 @@ fi
 # Apply patches
 git am %{PATCH1001}
 git am %{PATCH1002}
+git am %{PATCH1003}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1424,6 +1426,10 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon Nov 14 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-2.git5fa96d5.linaro]
+- Switch tree to use LEG/RPK 4.9-rc4 (https://github.com/linaro/rpk)
+- config: enable CONFIG_VFIO_NOIOMMU
+
 * Wed Nov 9 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-1.git6598138.linaro]
 - Early RP16.12 kernel, based on 4.9-rc4 (LEG + HiSilicon patches)
 - https://github.com/rsalveti/linux/tree/rpb1612-dev

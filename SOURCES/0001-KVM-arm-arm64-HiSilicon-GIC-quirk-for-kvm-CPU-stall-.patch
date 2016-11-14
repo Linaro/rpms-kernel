@@ -1,0 +1,237 @@
+From 2b3bb67cff2784a52ba3e300bcb1b76edbef188b Mon Sep 17 00:00:00 2001
+From: shameer <shamiali2008@gmail.com>
+Date: Fri, 30 Sep 2016 10:40:12 +0100
+Subject: [PATCH] KVM: arm/arm64: HiSilicon GIC quirk for kvm CPU stall issue
+
+KVM uses virt-phys interrupt map feature while forwarding the
+timer interrupt to Guest (ICH_LR HW bit=1).At present GIC on
+HiSilicon platforms(D02/D03) has issues with this feature and
+causes CPU stall.
+
+This patch is based on the Linaro RPK 16.06 release kernel
+patches[1][2].
+
+1. kvm: D0x: ACPI: check MADT oem id and oem table id for
+   specific workarounds by Hanjun Guo.
+2. KVM: arm/arm64: Fix for hisi kvm CPU stall issue by shameer.
+
+Signed-off-by: shameer <shamiali2008@gmail.com>
+---
+ arch/arm64/boot/dts/hisilicon/hip06.dtsi |  1 +
+ drivers/irqchip/irq-gic-v3.c             | 27 +++++++++++++++++++++++++++
+ include/kvm/arm_arch_timer.h             |  3 +++
+ include/kvm/arm_vgic.h                   |  6 ++++++
+ include/linux/irqchip/arm-gic-common.h   |  2 ++
+ virt/kvm/arm/arch_timer.c                | 24 ++++++++++++++++++------
+ virt/kvm/arm/vgic/vgic-v3.c              |  8 ++++++--
+ virt/kvm/arm/vgic/vgic.c                 |  5 +++++
+ 8 files changed, 68 insertions(+), 8 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/hisilicon/hip06.dtsi b/arch/arm64/boot/dts/hisilicon/hip06.dtsi
+index b548763..036289f 100644
+--- a/arch/arm64/boot/dts/hisilicon/hip06.dtsi
++++ b/arch/arm64/boot/dts/hisilicon/hip06.dtsi
+@@ -245,6 +245,7 @@
+ 		      <0x0 0xfe010000 0 0x10000>,       /* GICH */
+ 		      <0x0 0xfe020000 0 0x10000>;       /* GICV */
+ 		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
++		hisi-timer-irqmap-disabled;
+ 
+ 		its_dsa: interrupt-controller@c6000000 {
+ 			compatible = "arm,gic-v3-its";
+diff --git a/drivers/irqchip/irq-gic-v3.c b/drivers/irqchip/irq-gic-v3.c
+index 0b8e211..39b4ec8 100644
+--- a/drivers/irqchip/irq-gic-v3.c
++++ b/drivers/irqchip/irq-gic-v3.c
+@@ -1200,6 +1200,9 @@ static void __init gic_of_setup_kvm_info(struct device_node *node)
+ 	gic_v3_kvm_info.maint_irq = irq_of_parse_and_map(node, 0);
+ 	if (!gic_v3_kvm_info.maint_irq)
+ 		return;
++	/* HiSilicon GIC quirk: if GIC doesn't support virt timer irq map */
++	gic_v3_kvm_info.timer_irqmap_disabled = of_property_read_bool(node,
++						"hisi-timer-irqmap-disabled");
+ 
+ 	if (of_property_read_u32(node, "#redistributor-regions",
+ 				 &gicv_idx))
+@@ -1507,10 +1510,34 @@ static bool __init gic_acpi_collect_virt_info(void)
+ #define ACPI_GICV2_VCTRL_MEM_SIZE	(SZ_4K)
+ #define ACPI_GICV2_VCPU_MEM_SIZE	(SZ_8K)
+ 
++static void __init acpi_madt_oem_check(char *oem_id, char *oem_table_id)
++{
++    /*
++     * workaround for D02 and D03, disable virt timer interrupt mapping
++     * because GIC on D02 and D03 don't support that
++     */
++	if (!strncmp(oem_id, "HISI", 4)
++	  && (!strncmp(oem_table_id, "HIP05", 5)
++	  || !strncmp(oem_table_id, "HIP06", 5)))
++		gic_v3_kvm_info.timer_irqmap_disabled = true;
++}
++
++static int __init acpi_parse_madt(struct acpi_table_header *table)
++{
++	struct acpi_table_madt *acpi_madt;
++
++	acpi_madt = (struct acpi_table_madt *)table;
++	acpi_madt_oem_check(acpi_madt->header.oem_id,
++	acpi_madt->header.oem_table_id);
++
++	return 0;
++}
++
+ static void __init gic_acpi_setup_kvm_info(void)
+ {
+ 	int irq;
+ 
++	acpi_table_parse(ACPI_SIG_MADT, acpi_parse_madt);
+ 	if (!gic_acpi_collect_virt_info()) {
+ 		pr_warn("Unable to get hardware information used for virtualization\n");
+ 		return;
+diff --git a/include/kvm/arm_arch_timer.h b/include/kvm/arm_arch_timer.h
+index dda39d8..8d30a2a 100644
+--- a/include/kvm/arm_arch_timer.h
++++ b/include/kvm/arm_arch_timer.h
+@@ -55,6 +55,9 @@ struct arch_timer_cpu {
+ 
+ 	/* Is the timer enabled */
+ 	bool			enabled;
++
++	/* HiSilicon GIC quirk: Is the timer irq mapped */
++	bool			irq_mapped;
+ };
+ 
+ int kvm_timer_hyp_init(void);
+diff --git a/include/kvm/arm_vgic.h b/include/kvm/arm_vgic.h
+index 002f092..24c0128 100644
+--- a/include/kvm/arm_vgic.h
++++ b/include/kvm/arm_vgic.h
+@@ -38,6 +38,8 @@
+ #define VGIC_MIN_LPI		8192
+ #define KVM_IRQCHIP_NUM_PINS	(1020 - 32)
+ 
++#define HISI_VIRT_TIMER_IRQID	27 /*HiSi virt timer irq id- for GIC Quirk*/
++
+ enum vgic_type {
+ 	VGIC_V2,		/* Good ol' GICv2 */
+ 	VGIC_V3,		/* New fancy GICv3 */
+@@ -71,6 +73,9 @@ struct vgic_global {
+ 
+ 	/* GIC system register CPU interface */
+ 	struct static_key_false gicv3_cpuif;
++
++	/*HiSilicon GIC quirk: support timer irq map or not */
++	bool            timer_irqmap_disabled;
+ };
+ 
+ extern struct vgic_global kvm_vgic_global_state;
+@@ -286,6 +291,7 @@ int kvm_vgic_inject_irq(struct kvm *kvm, int cpuid, unsigned int intid,
+ 			bool level);
+ int kvm_vgic_inject_mapped_irq(struct kvm *kvm, int cpuid, unsigned int intid,
+ 			       bool level);
++bool kvm_vgic_support_timer_irqmap(void);
+ int kvm_vgic_map_phys_irq(struct kvm_vcpu *vcpu, u32 virt_irq, u32 phys_irq);
+ int kvm_vgic_unmap_phys_irq(struct kvm_vcpu *vcpu, unsigned int virt_irq);
+ bool kvm_vgic_map_is_active(struct kvm_vcpu *vcpu, unsigned int virt_irq);
+diff --git a/include/linux/irqchip/arm-gic-common.h b/include/linux/irqchip/arm-gic-common.h
+index c647b05..bdad290 100644
+--- a/include/linux/irqchip/arm-gic-common.h
++++ b/include/linux/irqchip/arm-gic-common.h
+@@ -27,6 +27,8 @@ struct gic_kvm_info {
+ 	unsigned int	maint_irq;
+ 	/* Virtual control interface */
+ 	struct resource vctrl;
++	/* HiSilicon GIC quirk: support timer irq map or not */
++	bool timer_irqmap_disabled;
+ };
+ 
+ const struct gic_kvm_info *gic_get_kvm_info(void);
+diff --git a/virt/kvm/arm/arch_timer.c b/virt/kvm/arm/arch_timer.c
+index 27a1f63..95c5c2e 100644
+--- a/virt/kvm/arm/arch_timer.c
++++ b/virt/kvm/arm/arch_timer.c
+@@ -177,9 +177,16 @@ static void kvm_timer_update_irq(struct kvm_vcpu *vcpu, bool new_level)
+ 	timer->irq.level = new_level;
+ 	trace_kvm_timer_update_irq(vcpu->vcpu_id, timer->irq.irq,
+ 				   timer->irq.level);
+-	ret = kvm_vgic_inject_mapped_irq(vcpu->kvm, vcpu->vcpu_id,
+-					 timer->irq.irq,
+-					 timer->irq.level);
++	if (timer->irq_mapped) {
++		ret = kvm_vgic_inject_mapped_irq(vcpu->kvm, vcpu->vcpu_id,
++						 timer->irq.irq,
++						 timer->irq.level);
++	} else {
++		ret = kvm_vgic_inject_irq(vcpu->kvm, vcpu->vcpu_id,
++						 timer->irq.irq,
++						 timer->irq.level);
++	}
++
+ 	WARN_ON(ret);
+ }
+ 
+@@ -493,10 +500,15 @@ int kvm_timer_enable(struct kvm_vcpu *vcpu)
+ 	/*
+ 	 * Tell the VGIC that the virtual interrupt is tied to a
+ 	 * physical interrupt. We do that once per VCPU.
++	 * HiSilicon GIC quirk: D02 and D03 GICs doesn't support
++	 * virt timer irq map.
+ 	 */
+-	ret = kvm_vgic_map_phys_irq(vcpu, timer->irq.irq, phys_irq);
+-	if (ret)
+-		return ret;
++	if (kvm_vgic_support_timer_irqmap()) {
++		ret = kvm_vgic_map_phys_irq(vcpu, timer->irq.irq, phys_irq);
++		if (ret)
++			return ret;
++		timer->irq_mapped = true;
++	}
+ 
+ 
+ 	/*
+diff --git a/virt/kvm/arm/vgic/vgic-v3.c b/virt/kvm/arm/vgic/vgic-v3.c
+index 9f0dae3..1203159 100644
+--- a/virt/kvm/arm/vgic/vgic-v3.c
++++ b/virt/kvm/arm/vgic/vgic-v3.c
+@@ -40,9 +40,11 @@ void vgic_v3_process_maintenance(struct kvm_vcpu *vcpu)
+ 				intid = val & GICH_LR_VIRTUALID;
+ 
+ 			WARN_ON(cpuif->vgic_lr[lr] & ICH_LR_STATE);
+-
+-			kvm_notify_acked_irq(vcpu->kvm, 0,
++			/* HiSi virtual timer irq quirk. */
++			if (intid != HISI_VIRT_TIMER_IRQID) {
++				kvm_notify_acked_irq(vcpu->kvm, 0,
+ 					     intid - VGIC_NR_PRIVATE_IRQS);
++			}
+ 		}
+ 
+ 		/*
+@@ -322,6 +324,8 @@ int vgic_v3_probe(const struct gic_kvm_info *info)
+ 	 */
+ 	kvm_vgic_global_state.nr_lr = (ich_vtr_el2 & 0xf) + 1;
+ 	kvm_vgic_global_state.can_emulate_gicv2 = false;
++	kvm_vgic_global_state.timer_irqmap_disabled =
++					info->timer_irqmap_disabled;
+ 
+ 	if (!info->vcpu.start) {
+ 		kvm_info("GICv3: no GICV resource entry\n");
+diff --git a/virt/kvm/arm/vgic/vgic.c b/virt/kvm/arm/vgic/vgic.c
+index 2893d5b..c3f30690 100644
+--- a/virt/kvm/arm/vgic/vgic.c
++++ b/virt/kvm/arm/vgic/vgic.c
+@@ -398,6 +398,11 @@ int kvm_vgic_inject_mapped_irq(struct kvm *kvm, int cpuid, unsigned int intid,
+ 	return vgic_update_irq_pending(kvm, cpuid, intid, level, true);
+ }
+ 
++bool kvm_vgic_support_timer_irqmap(void)
++{
++	return (kvm_vgic_global_state.timer_irqmap_disabled) ? false : true;
++}
++
+ int kvm_vgic_map_phys_irq(struct kvm_vcpu *vcpu, u32 virt_irq, u32 phys_irq)
+ {
+ 	struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, virt_irq);
+-- 
+2.7.4
+
