@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 5fa96d5
-%define pkgrelease 3.git%{gitrelease}.linaro
+%define gitrelease f509483
+%define pkgrelease 4.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon Nov 14 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-4.gitf509483.linaro]
+- RPK updated to 4.9-rc5
+
 * Mon Nov 14 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-3.git5fa96d5.linaro]
 - Merge updates from 7.3 (4.5)
 
