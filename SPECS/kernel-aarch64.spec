@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.9.0
 %define gitrelease f509483
-%define pkgrelease 4.git%{gitrelease}.linaro
+%define pkgrelease 5.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Tue Nov 15 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-5.gitf509483.linaro]
+- configs: enabling CONFIG_ACPI_CPPC_CPUFREQ, CONFIG_QCOM_EMAC and CONFIG_QCA7000
+
 * Mon Nov 14 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-4.gitf509483.linaro]
 - RPK updated to 4.9-rc5
 
