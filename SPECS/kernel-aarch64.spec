@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease f509483
-%define pkgrelease 6.git%{gitrelease}.linaro
+%define gitrelease 33a04f3
+%define pkgrelease 7.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -324,8 +324,7 @@ Source56: config-debug
 # Additional patches
 Patch1001: 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch
 Patch1002: 0001-arm64-prefer-ACPI-by-default.patch
-Patch1003: 0001-KVM-arm-arm64-HiSilicon-GIC-quirk-for-kvm-CPU-stall-.patch
-Patch1004: 0001-net-mlx4_core-enable-enable_4k_uar-by-default.patch
+Patch1003: 0001-net-mlx4_core-enable-enable_4k_uar-by-default.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -659,7 +658,6 @@ fi
 git am %{PATCH1001}
 git am %{PATCH1002}
 git am %{PATCH1003}
-git am %{PATCH1004}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1432,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Fri Nov 18 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-7.git33a04f3.linaro]
+- Update RPK to 33a04f3.
+
 * Tue Nov 15 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-6.gitf509483.linaro]
 - Add 0001-net-mlx4_core-enable-enable_4k_uar-by-default.patch, so mlx_core can
   work by default
