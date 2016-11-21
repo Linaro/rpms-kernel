@@ -711,3 +711,7 @@ CONFIG_NET_VENDOR_MELLANOX=y
 
 # This Xilinx option is now built for arm64 as well as ARM
 CONFIG_XILINX_VDMA=m
+
+# optee
+CONFIG_TEE=m
+CONFIG_OPTEE=m

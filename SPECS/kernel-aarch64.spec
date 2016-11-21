@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 33a04f3
-%define pkgrelease 7.git%{gitrelease}.linaro
+%define gitrelease 942b532
+%define pkgrelease 8.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,10 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon Nov 21 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-8.git942b532.linaro]
+- Update RPK to 942b532 (rc-6).
+- Enable CONFIG_TEE
+
 * Fri Nov 18 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-7.git33a04f3.linaro]
 - Update RPK to 33a04f3.
 
