@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.9.0
 %define gitrelease 942b532
-%define pkgrelease 8.git%{gitrelease}.linaro
+%define pkgrelease 9.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -325,6 +325,7 @@ Source56: config-debug
 Patch1001: 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch
 Patch1002: 0001-arm64-prefer-ACPI-by-default.patch
 Patch1003: 0001-net-mlx4_core-enable-enable_4k_uar-by-default.patch
+Patch1004: 0001-hisi_sas-wip-updates-from-estuary-d0x-tracking-sas.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -658,6 +659,7 @@ fi
 git am %{PATCH1001}
 git am %{PATCH1002}
 git am %{PATCH1003}
+git am %{PATCH1004}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1430,6 +1432,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon Nov 21 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-9.git942b532.linaro]
+- Add 0001-hisi_sas-wip-updates-from-estuary-d0x-tracking-sas.patch
+
 * Mon Nov 21 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-8.git942b532.linaro]
 - Update RPK to 942b532 (rc-6).
 - Enable CONFIG_TEE
