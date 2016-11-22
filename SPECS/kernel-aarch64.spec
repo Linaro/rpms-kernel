@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.9.0
 %define gitrelease 942b532
-%define pkgrelease 9.git%{gitrelease}.linaro
+%define pkgrelease 10.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -956,7 +956,7 @@ BuildKernel() {
     }
 
     collect_modules_list networking \
-    			 'register_netdev|ieee80211_register_hw|usbnet_probe|phy_driver_register|rt2x00(pci|usb)_probe|register_netdevice'
+			 'register_netdev|ieee80211_register_hw|usbnet_probe|phy_driver_register|rt2x00(pci|usb)_probe|register_netdevice|register_netdevice_notifier'
     collect_modules_list block \
 			 'ata_scsi_ioctl|scsi_add_host|scsi_add_host_with_dma|blk_alloc_queue|blk_init_queue|register_mtd_blktrans|scsi_esp_register|scsi_register_device_handler|blk_queue_physical_block_size|ahci_platform_get_resources' 'pktcdvd.ko|dm-mod.ko'
     collect_modules_list drm \
@@ -1432,6 +1432,10 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Tue Nov 22 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-10.git942b532.linaro]
+- Extend networking modules list (include modules using register_netdevice_notifier),
+  to avoid missing modules (https://bugs.linaro.org/show_bug.cgi?id=2620)
+
 * Mon Nov 21 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-9.git942b532.linaro]
 - Add 0001-hisi_sas-wip-updates-from-estuary-d0x-tracking-sas.patch
 
