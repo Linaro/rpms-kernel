@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 942b532
-%define pkgrelease 11.git%{gitrelease}.linaro
+%define gitrelease 328d683
+%define pkgrelease 12.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -324,7 +324,6 @@ Source56: config-debug
 # Additional patches
 Patch1001: 0001-arm64-prefer-ACPI-by-default.patch
 Patch1002: 0001-net-mlx4_core-enable-enable_4k_uar-by-default.patch
-Patch1003: 0001-hisi_sas-wip-updates-from-estuary-d0x-tracking-sas.patch
 
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
@@ -657,7 +656,6 @@ fi
 # Apply patches
 git am %{PATCH1001}
 git am %{PATCH1002}
-git am %{PATCH1003}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1430,6 +1428,11 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Tue Nov 22 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-12.git328d683.linaro]
+- Update RPK to 328d683
+- Drop 0001-hisi_sas-wip-updates-from-estuary-d0x-tracking-sas.patch, changes
+  now part of RPK
+
 * Tue Nov 22 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-11.git942b532.linaro]
 - Drop 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch, wait until
   the right upstream fix is in place
