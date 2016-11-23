@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 328d683
-%define pkgrelease 12.git%{gitrelease}.linaro
+%define gitrelease 42d2600
+%define pkgrelease 13.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1428,6 +1428,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Wed Nov 23 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-13.git42d2600.linaro]
+- Update RPK to 42d2600
+
 * Tue Nov 22 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-12.git328d683.linaro]
 - Update RPK to 328d683
 - Drop 0001-hisi_sas-wip-updates-from-estuary-d0x-tracking-sas.patch, changes
