@@ -1,0 +1,58 @@
+From cdcda6fbc94865318a3cac8464cdc652fb97d27c Mon Sep 17 00:00:00 2001
+From: Graeme Gregory <graeme.gregory@linaro.org>
+Date: Fri, 25 Nov 2016 13:22:35 +0000
+Subject: [PATCH] DISTROHACK: acpi/spcr: remove baud rate handling.
+
+This breaks arm64 boards with 8250 IP blocks with non standard clocks.
+Supplying the baud rate makes the driver change to that baud rate but it
+bases its calculations off the wrong clock value.
+
+Signed-off-by: Graeme Gregory <graeme.gregory@linaro.org>
+---
+ drivers/acpi/spcr.c | 23 ++---------------------
+ 1 file changed, 2 insertions(+), 21 deletions(-)
+
+diff --git a/drivers/acpi/spcr.c b/drivers/acpi/spcr.c
+index 6c6710b..1117758 100644
+--- a/drivers/acpi/spcr.c
++++ b/drivers/acpi/spcr.c
+@@ -37,7 +37,6 @@ int __init parse_spcr(bool earlycon)
+ 	acpi_status status;
+ 	char *uart;
+ 	char *iotype;
+-	int baud_rate;
+ 	int err;
+ 
+ 	if (acpi_disabled)
+@@ -81,26 +80,8 @@ int __init parse_spcr(bool earlycon)
+ 		goto done;
+ 	}
+ 
+-	switch (table->baud_rate) {
+-	case 3:
+-		baud_rate = 9600;
+-		break;
+-	case 4:
+-		baud_rate = 19200;
+-		break;
+-	case 6:
+-		baud_rate = 57600;
+-		break;
+-	case 7:
+-		baud_rate = 115200;
+-		break;
+-	default:
+-		err = -ENOENT;
+-		goto done;
+-	}
+-
+-	snprintf(opts, sizeof(opts), "%s,%s,0x%llx,%d", uart, iotype,
+-		 table->serial_port.address, baud_rate);
++	snprintf(opts, sizeof(opts), "%s,%s,0x%llx", uart, iotype,
++		 table->serial_port.address);
+ 
+ 	pr_info("console: %s\n", opts);
+ 
+-- 
+2.7.4
+
