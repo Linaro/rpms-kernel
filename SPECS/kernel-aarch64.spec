@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 876b943
-%define pkgrelease 14.git%{gitrelease}.linaro
+%define gitrelease e3fc6c7
+%define pkgrelease 15.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon Dec 5 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-15.gite3fc6c7.linaro]
+- Update RPK to e3fc6c7
+
 * Sat Nov 26 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-14.git876b943.linaro]
 - Update RPK to 876b943
 - Add 0001-DISTROHACK-acpi-spcr-remove-baud-rate-handling.patch
