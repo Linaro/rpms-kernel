@@ -12,7 +12,7 @@ Summary: The Linux kernel
 
 %define rpmversion 4.9.0
 %define gitrelease e3fc6c7
-%define pkgrelease 15.git%{gitrelease}.linaro
+%define pkgrelease 16.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Wed Dec 7 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-16.gite3fc6c7.linaro]
+- arm64: Enable 48bit VA
+
 * Mon Dec 5 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-15.gite3fc6c7.linaro]
 - Update RPK to e3fc6c7
 
