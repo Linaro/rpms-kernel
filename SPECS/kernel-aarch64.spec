@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease e3fc6c7
-%define pkgrelease 16.git%{gitrelease}.linaro
+%define gitrelease ef6d56a
+%define pkgrelease 17.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Thu Dec 8 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-17.gitef6d56a.linaro]
+- Update RPK to ef6d56a
+
 * Wed Dec 7 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-16.gite3fc6c7.linaro]
 - arm64: Enable 48bit VA
 
