@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease 11f2cb2
-%define pkgrelease 19.git%{gitrelease}.linaro
+%define gitrelease edc2a1c
+%define pkgrelease 20.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Wed Dec 14 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-20.gitedc2a1c.linaro]
+- Update RPK to edc2a1c
+
 * Tue Dec 13 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-19.git11f2cb2.linaro]
 - Update RPK to 11f2cb2
 - Enable CONFIG_HOLES_IN_ZONE
