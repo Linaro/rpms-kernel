@@ -11,8 +11,8 @@ Summary: The Linux kernel
 %global released_kernel 1
 
 %define rpmversion 4.9.0
-%define gitrelease edc2a1c
-%define pkgrelease 20.git%{gitrelease}.linaro
+%define gitrelease 04ec80a
+%define pkgrelease 21.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -1430,6 +1430,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Wed Jan 11 2017 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-21.git04ec80a.linaro]
+- Update RPK to 04ec80a
+
 * Wed Dec 14 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-20.gitedc2a1c.linaro]
 - Update RPK to edc2a1c
 
