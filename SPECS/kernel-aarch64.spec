@@ -10,9 +10,9 @@ Summary: The Linux kernel
 # be 0.
 %global released_kernel 1
 
-%define rpmversion 4.9.0
-%define gitrelease 33a04f3
-%define pkgrelease 7.git%{gitrelease}.linaro
+%define rpmversion 4.12~rc6
+%define gitrelease 89576a4
+%define pkgrelease 1.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
 ## Generated with (e.g.):
@@ -322,10 +322,6 @@ Source55: config-generic
 Source56: config-debug
 
 # Additional patches
-Patch1001: 0001-arm64-mm-Fix-memmap-to-be-initialized-for-the-entire.patch
-Patch1002: 0001-arm64-prefer-ACPI-by-default.patch
-Patch1003: 0001-net-mlx4_core-enable-enable_4k_uar-by-default.patch
-
 # empty final patch to facilitate testing of kernel patches
 Patch999999: linux-kernel-test.patch
 
@@ -644,20 +640,6 @@ cp %{SOURCE15} .
 make -f %{SOURCE30} VERSION=%{version} configs
 
 ApplyOptionalPatch linux-kernel-test.patch
-
-if [ ! -d .git ]; then
-    git init
-    git config user.email "noreply@centos.org"
-    git config user.name "AltArch Kernel"
-    git config gc.auto 0
-    git add .
-    git commit -a -q -m "baseline"
-fi
-
-# Apply patches
-git am %{PATCH1001}
-git am %{PATCH1002}
-git am %{PATCH1003}
 
 # Any further pre-build tree manipulations happen here.
 
@@ -1430,6 +1412,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Mon Jun 26 2017 Riku Voipio <riku.voipio@linaro.org> [4.12~rc6-89576a4.linaro]
+- Update RPK to 89576a4.
+
 * Fri Nov 18 2016 Ricardo Salveti <ricardo.salveti@linaro.org> [4.9.0-7.git33a04f3.linaro]
 - Update RPK to 33a04f3.
 
