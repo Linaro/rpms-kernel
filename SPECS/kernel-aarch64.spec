@@ -10,8 +10,8 @@ Summary: The Linux kernel
 # be 0.
 %global released_kernel 1
 
-%define rpmversion 4.12~rc7
-%define gitrelease bea8b46
+%define rpmversion 4.12
+%define gitrelease 2f8e55b
 %define pkgrelease 1.git%{gitrelease}.linaro
 
 # The kernel tarball/base version
@@ -1412,6 +1412,9 @@ fi
 %kernel_variant_files %{with_debug} kernel-debug debug
 
 %changelog
+* Thu Jul 6 2017 Fathi Boudra <fathi.boudra@linaro.org> [4.12-2f8e55b.linaro]
+- Update to RPK commit 2f8e55b, based on 4.12.
+
 * Wed Jul 5 2017 Fathi Boudra <fathi.boudra@linaro.org> [4.12~rc7-bea8b46.linaro]
 - Update to latest RPK commit bea8b46, based on 4.12-rc7.
 
